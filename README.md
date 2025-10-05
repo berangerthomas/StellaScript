@@ -91,21 +91,21 @@ This method ensures that each chunk sent for transcription contains coherent con
 | `--max-speakers <int>` | `None` | **(File mode only)** Hint for the maximum number of speakers. |
 | `--transcription-engine <engine>` | `auto` | Engine. Choices: `auto`, `faster-whisper`, `transformers`. |
 | `--auto-engine-threshold <float>` | `15.0` | **(Auto mode only)** Time in seconds to switch from `transformers` to `faster-whisper`. |
-| `--enhancement <method>` | `none` | Audio enhancement. Choices: `none`, `nsnet2` [[6]](#6), `demucs` [[5]](#5). |
+| `--enhancement <method>` | `none` | Audio enhancement. Choices: `none`, `deepfilternet` [[6]](#6), `demucs` [[5]](#5). |
 
 ## Usage Scenarios
 
 ### Scenario 1: Live Subtitling of a Presentation
 
 **Goal**: Low-latency, real-time captions for a single speaker.
-**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.6`) prevents voice modulation from creating a new speaker identity. `nsnet2` provides lightweight noise reduction.
+**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.6`) prevents voice modulation from creating a new speaker identity. `deepfilternet` provides lightweight noise reduction.
 ```bash
 python main.py \
   --mode subtitle \
   --language en \
   --diarization cluster \
   --threshold 0.6 \
-  --enhancement nsnet2
+  --enhancement deepfilternet
 ```
 
 ### Scenario 2: Generating a Transcript of a Recorded Interview
@@ -191,7 +191,7 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
 3.  <a name="3"></a>Desplanques, B., Thienpondt, J., & Demuynck, K. (2020). *ECAPA-TDNN: Emphasized Channel Attention, Propagation and Aggregation in TDNN Based Speaker Verification*. [arXiv:2005.07143](https://arxiv.org/abs/2005.07143).
 4.  <a name="4"></a>Silero Team. (2024). *Silero VAD: pre-trained enterprise-grade Voice Activity Detector (VAD), Number Detector and Language Classifier*. [GitHub repository](https://github.com/snakers4/silero-vad).
 5.  <a name="5"></a>Défossez, A., Usunier, N., Bottou, L., & Bach, F. (2019). *Music Source Separation in the Waveform Domain*. [arXiv:1911.13254](https://arxiv.org/abs/1911.13254).
-6.  <a name="6"></a>Braun, S., Gamper, H., Reddy, C. K. A., & Cutler, R. (2021). *Towards efficient models for real-time deep noise suppression*. In *ICASSP 2021 - 2021 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)*.
+6.  <a name="6"></a>Schröter, H., Escalante-B., A. N., & Rosenkranz, T. (2022). *DeepFilterNet: A Low Complexity Speech Enhancement Framework for Full-Band Audio based on Deep Filtering*. [arXiv:2110.05588](https://arxiv.org/abs/2110.05588).
 
 ## License
 

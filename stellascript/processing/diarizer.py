@@ -24,7 +24,7 @@ class Diarizer:
         try:
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token,
+                use_auth_token=hf_token
             )
             if pipeline is None:
                 raise RuntimeError("Pipeline.from_pretrained returned None.")
@@ -52,6 +52,10 @@ class Diarizer:
 
     def diarize_pyannote(self, audio_data, min_speakers=None, max_speakers=None):
         """Diarize using pyannote pipeline."""
+        if self.diarization_pipeline is None:
+            raise RuntimeError(
+                "Diarization pipeline not initialized. Check if method is 'pyannote'."
+            )
         print("Processing segment with 'pyannote' method...")
         diarization_params = {}
         if min_speakers is not None:
@@ -63,7 +67,18 @@ class Diarizer:
             {"waveform": torch.from_numpy(audio_data).unsqueeze(0), "sample_rate": self.rate},
             **diarization_params
         )
-        segments_list = list(diarization_result.itertracks(yield_label=True))
+        annotation = diarization_result
+        if not hasattr(annotation, "itertracks"):
+            # The result is not an annotation object, so it's likely a container.
+            # Let's find the annotation object within its attributes.
+            for value in vars(annotation).values():
+                if hasattr(value, "itertracks"):
+                    annotation = value
+                    break
+            else:
+                # This else block runs if the loop completes without finding an annotation.
+                raise TypeError(f"Could not find an annotation object in the diarization result: {diarization_result}")
+        segments_list = list(annotation.itertracks(yield_label=True))
         unique_speakers = set(speaker_label for _, _, speaker_label in segments_list)
         print(f"Found {len(segments_list)} speech segments from {len(unique_speakers)} speakers.")
         return segments_list
@@ -72,6 +87,7 @@ class Diarizer:
         """Diarize using VAD and clustering."""
         print("Segmenting speech with Silero VAD...")
         self._ensure_vad_loaded()
+        assert self.vad_utils is not None, "VAD utils should be loaded by _ensure_vad_loaded"
         (get_speech_timestamps, _, _, _, _) = self.vad_utils
         speech_timestamps = get_speech_timestamps(
             torch.from_numpy(audio_data), self.vad_model, sampling_rate=self.rate
@@ -130,6 +146,7 @@ class Diarizer:
     def apply_vad_to_chunk(self, audio_chunk):
         """Apply VAD to a small audio chunk (for live subtitle mode)."""
         self._ensure_vad_loaded()
+        assert self.vad_model is not None, "VAD model should be loaded by _ensure_vad_loaded"
         audio_tensor = torch.from_numpy(np.copy(audio_chunk))
         speech_prob = self.vad_model(audio_tensor, self.rate).item()
         return speech_prob

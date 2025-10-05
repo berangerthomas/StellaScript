@@ -22,6 +22,8 @@ def main():
             enhancement_method=args.enhancement,
             transcription_engine=args.transcription_engine,
             auto_engine_threshold=args.auto_engine_threshold,
+            save_enhanced_audio=args.save_enhanced_audio,
+            save_recorded_audio=args.save_recorded_audio,
         )
 
         if args.file:
@@ -29,26 +31,27 @@ def main():
         else:
             print("Starting live transcription from microphone...")
             transcriber.start_recording()
-            print("Recording in progress... Press Ctrl+C to stop")
-
+            print("Recording... Press Ctrl+C to stop.")
             while True:
-                result = transcriber.get_transcription()
-                if result:
-                    # This part is for potential external use, not console display
-                    # The orchestrator already prints the output
-                    pass
                 time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\nStopping process...")
         if transcriber:
-            if not args.file:
-                transcriber.stop_recording()
+            transcriber.stop_recording()
+            if transcriber.save_recorded_audio and not args.file:
+                transcriber.save_audio()
         print("Done.")
 
     except Exception as e:
         print(f"Error: {e}")
         traceback.print_exc()
+        # S'assurer de bien fermer même en cas d'erreur
+        if transcriber and not args.file:
+            try:
+                transcriber.stop_recording()
+            except:
+                pass
 
 if __name__ == "__main__":
     main()

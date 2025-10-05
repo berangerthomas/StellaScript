@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from faster_whisper import WhisperModel
+from transformers import pipeline
 
 class Transcriber:
     def __init__(self, model_id, device, engine, auto_engine_threshold, language):
@@ -15,6 +16,7 @@ class Transcriber:
         self.faster_whisper_model = None
         self.transformers_processor = None
         self.transformers_model = None
+        self.transformers_pipeline = None # Add this line
 
         self._load_models()
 
@@ -29,16 +31,16 @@ class Transcriber:
 
         if self.engine in ["transformers", "auto"]:
             print("Loading transformers Whisper model...")
-            from transformers import WhisperForConditionalGeneration, WhisperProcessor
             
             model_name = f"openai/whisper-{self.model_id}"
-            self.transformers_processor = WhisperProcessor.from_pretrained(model_name)
-            self.transformers_model = WhisperForConditionalGeneration.from_pretrained(
-                model_name
-            ).to(self.device)
+            torch_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
             
-            if self.device.type == "cuda":
-                self.transformers_model = self.transformers_model.half()
+            self.transformers_pipeline = pipeline(
+                "automatic-speech-recognition",
+                model=model_name,
+                torch_dtype=torch_dtype,
+                device=self.device,
+            )
 
         if self.engine == "auto":
             print(f"Auto-selection enabled: segments <{self.auto_engine_threshold}s will use transformers, >=<{self.auto_engine_threshold}s will use faster-whisper")
@@ -79,7 +81,11 @@ class Transcriber:
 
     def _transcribe_with_faster_whisper(self, audio_data):
         """Transcribe with faster-whisper."""
-        segments, _ = self.faster_whisper_model.transcribe(
+        if self.faster_whisper_model is None:
+            print("Warning: faster-whisper model not loaded. Returning empty transcription.")
+            return ""
+
+        segments, info = self.faster_whisper_model.transcribe(
             audio_data,
             language=self.language,
             task="transcribe",
@@ -101,48 +107,40 @@ class Transcriber:
             prepend_punctuations="\"'¿([{-",
             append_punctuations="\"'.。,，!！?？:：)]}、",
         )
-        
-        result_text = "".join(segment.text for segment in segments).strip()
-        
-        if result_text:
-            words = result_text.split()
-            if len(words) > 10:
-                unique_ratio = len(set(words)) / len(words)
-                if unique_ratio < 0.3:
-                    print(f"WARNING: High repetition detected (unique ratio: {unique_ratio:.2f}) in faster-whisper output")
-                    print(f"  -> Consider lowering --auto-engine-threshold (current: {self.auto_engine_threshold}s)")
-        
-        return result_text
+        text = "".join(segment.text for segment in segments)
+
+        # Check for repetitive transcriptions by analyzing unique word ratio.
+        words = text.split()
+        if len(words) > 10:
+            unique_word_ratio = len(set(words)) / len(words)
+            if unique_word_ratio < 0.3:
+                print(
+                    f"Warning: Low unique word ratio detected ({unique_word_ratio:.2f}). "
+                    "The transcription may be repetitive."
+                )
+                print(f"Repetitive text sample: '{text[:100]}...'")
+                print(
+                    "Suggestion: If this issue persists, consider adjusting the audio input "
+                    "or using a different transcription engine if available."
+                )
+
+        return text.strip()
 
     def _transcribe_with_transformers(self, audio_data, rate):
-        """Transcribe with transformers."""
-        audio_normalized = audio_data / (np.max(np.abs(audio_data)) + 1e-8)
-        
-        processed_input = self.transformers_processor(
-            audio_normalized,
-            sampling_rate=rate,
-            return_tensors="pt"
-        )
-        features = processed_input.input_features.to(self.device)
-        
-        attention_mask = torch.ones(
-            features.shape[:-1], dtype=torch.long, device=self.device
+        if self.transformers_pipeline is None:
+            print("Warning: Transformers pipeline not loaded. Returning empty transcription.")
+            return ""
+            
+        # The pipeline expects a dictionary with raw data and sampling rate
+        result = self.transformers_pipeline(
+            {"raw": audio_data, "sampling_rate": rate},
+            generate_kwargs={"language": self.language},
+            batch_size=1  # Force non-generator output for single items
         )
         
-        predicted_ids = self.transformers_model.generate(
-            features,
-            attention_mask=attention_mask,
-            language=self.language,
-            task="transcribe",
-            max_length=448,
-            num_beams=5,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=5,
-        )
+        # The pipeline result is a dictionary. Add explicit type check to satisfy Pylance.
+        text_result = ""
+        if isinstance(result, dict) and "text" in result:
+            text_result = str(result.get("text", ""))
         
-        transcription = self.transformers_processor.batch_decode(
-            predicted_ids,
-            skip_special_tokens=True
-        )[0].strip()
-        
-        return transcription
+        return text_result.strip()

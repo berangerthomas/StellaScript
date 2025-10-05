@@ -1,71 +1,63 @@
 # stellascript/audio/enhancement.py
 
-import os
 import warnings
 import numpy as np
 import torch
+import torchaudio
+from df.enhance import enhance, init_df
 
 class AudioEnhancer:
     def __init__(self, enhancement_method, device, rate):
         self.enhancement_method = enhancement_method
         self.device = device
         self.rate = rate
-        self.nsnet2_session = None
         self.demucs_model = None
-
-    def _ensure_nsnet2_model_downloaded(self):
-        """Downloads the NSNet2 ONNX model if it doesn't exist."""
-        model_path = "nsnet2-20ms-baseline.onnx"
-        if not os.path.exists(model_path):
-            print("Downloading NSNet2 model...")
-            try:
-                import urllib.request
-                url = "https://github.com/microsoft/DNS-Challenge/raw/master/NSNet2-baseline/nsnet2-20ms-baseline.onnx"
-                urllib.request.urlretrieve(url, model_path)
-                print("NSNet2 model downloaded successfully.")
-            except Exception as e:
-                raise RuntimeError(f"Failed to download NSNet2 model: {e}")
-        return model_path
+        self.df_model = None
+        self.df_state = None
 
     def apply(self, audio_data, is_live=False):
         """Apply selected audio enhancement method."""
         if self.enhancement_method == "none":
             return audio_data
 
-        if self.enhancement_method == "nsnet2":
-            if self.nsnet2_session is None:
-                print("Loading NSNet2 denoiser...")
+        if self.enhancement_method == "deepfilternet":
+            if self.df_model is None:
+                print("Loading DeepFilterNet denoiser...")
                 try:
-                    import onnxruntime as ort
-                    model_path = self._ensure_nsnet2_model_downloaded()
-                    self.nsnet2_session = ort.InferenceSession(model_path)
-                except ImportError:
-                    warnings.warn("onnxruntime is not installed. Please run 'uv sync'. Skipping enhancement.")
-                    return audio_data
+                    self.df_model, self.df_state, _ = init_df()
                 except Exception as e:
-                    warnings.warn(f"Failed to load NSNet2 model: {e}. Skipping enhancement.")
+                    warnings.warn(f"Failed to load DeepFilterNet model: {e}. Skipping enhancement.")
                     return audio_data
             
-            audio = audio_data.astype(np.float32)
-            if np.max(np.abs(audio)) > 0:
-                audio = audio / np.max(np.abs(audio))
+            # Convert to torch tensor, add channel dimension for mono audio
+            audio_tensor = torch.from_numpy(audio_data.copy()).float()
+            if audio_tensor.dim() == 1:
+                audio_tensor = audio_tensor.unsqueeze(0)
+            if self.device == "cuda":
+                audio_tensor = audio_tensor.to(self.device)
 
-            frame_size = 320
-            hop_size = 160
-            
-            output_audio = []
-            for i in range(0, len(audio) - frame_size, hop_size):
-                frame = audio[i:i+frame_size]
-                enhanced_frame = self.nsnet2_session.run(
-                    None, 
-                    {"input": frame.reshape(1, -1)}
-                )[0]
-                output_audio.append(enhanced_frame.flatten()[:hop_size])
-            
-            if not output_audio:
-                return np.array([], dtype=np.float32)
+            # Resample to 48kHz for DeepFilterNet if necessary
+            if self.rate != 48000:
+                resampler = torchaudio.transforms.Resample(
+                    orig_freq=self.rate, new_freq=48000
+                ).to(self.device)
+                audio_tensor = resampler(audio_tensor)
 
-            return np.concatenate(output_audio)
+            # Enhance the audio
+            if self.df_model is None or self.df_state is None:
+                warnings.warn("DeepFilterNet model not loaded. Skipping enhancement.")
+                return audio_data
+            enhanced_audio = enhance(self.df_model, self.df_state, audio_tensor)
+
+            # Resample back to the original rate if necessary
+            if self.rate != 48000:
+                resampler_back = torchaudio.transforms.Resample(
+                    orig_freq=48000, new_freq=self.rate
+                ).to(self.device)
+                enhanced_audio = resampler_back(enhanced_audio)
+
+            # Convert back to numpy array and remove channel dimension
+            return enhanced_audio.squeeze(0).cpu().numpy()
 
         elif self.enhancement_method == "demucs":
             if is_live:
@@ -74,7 +66,6 @@ class AudioEnhancer:
             try:
                 from demucs.pretrained import get_model
                 from demucs.apply import apply_model
-                import torchaudio
             except ImportError as e:
                 print(f"!!! DEMUCS IMPORT FAILED: {e} !!!")
                 warnings.warn("Demucs not installed. Please run 'uv sync'. Skipping enhancement.")

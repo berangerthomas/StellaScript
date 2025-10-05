@@ -33,13 +33,13 @@ def parse_args():
         "--threshold",
         type=float,
         default=0.7,
-        help="Similarity threshold for speaker identification.",
+        help="Similarity threshold for speaker identification (used with --diarization cluster).",
     )
     parser.add_argument(
         "--mode",
         type=str,
         choices=["subtitle", "transcription"],
-        default="subtitle",
+        default="transcription",
         help="Processing mode.",
     )
     parser.add_argument(
@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument(
         "--enhancement",
         type=str,
-        choices=["none", "nsnet2", "demucs"],
+        choices=["none", "deepfilternet", "demucs"],
         default="none",
         help="Audio enhancement method.",
     )
@@ -81,8 +81,19 @@ def parse_args():
         default=15.0,
         help="Duration threshold for auto engine selection.",
     )
+    parser.add_argument(
+        "--save-enhanced-audio",
+        action="store_true",
+        help="Save the enhanced audio to a new file.",
+    )
+    parser.add_argument(
+        "--save-recorded-audio",
+        action="store_true",
+        help="Save the raw recorded audio from the microphone to a WAV file.",
+    )
 
     args = parser.parse_args()
+
     validate_args(args, parser)
     return args
 
@@ -96,10 +107,11 @@ def validate_args(args, parser):
             "In live mode, '--diarization cluster' is only compatible with '--mode subtitle'."
         )
 
-    default_threshold = parser.get_default("threshold")
-    if args.diarization == "pyannote" and args.threshold != default_threshold:
+    # The --threshold argument is only used for 'cluster' diarization.
+    # Warn the user if they provide it while using pyannote.
+    if args.diarization == "pyannote" and args.threshold != parser.get_default("threshold"):
         warnings.warn(
-            "Warning: --threshold is only used with '--diarization cluster'."
+            "Warning: --threshold is ignored when using '--diarization pyannote'."
         )
     
     if args.auto_engine_threshold != parser.get_default("auto_engine_threshold") and args.transcription_engine != "auto":

@@ -17,4 +17,7 @@ dependencies = [
     "demucs>=4.0.1",
     "soundfile>=0.13.1",
     "transformers>=4.39.3",
+    "deepfilternet",
+    "torchvision>=0.23.0",
+    "torchcodec>=0.7.0",
 ]
