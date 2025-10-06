@@ -4,8 +4,12 @@ import os
 import torch
 import numpy as np
 import traceback
+from typing import Any, Dict
 from pyannote.audio import Pipeline
 from pyannote.core import Segment
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class Diarizer:
     def __init__(self, device, method, hf_token, rate):
@@ -20,7 +24,7 @@ class Diarizer:
         """Load the diarization pipeline."""
         if self.method != "pyannote":
             return None
-        print("Loading diarization model...")
+        logger.info("Loading pyannote diarization model")
         try:
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
@@ -31,6 +35,7 @@ class Diarizer:
 
             if self.device.type == "cuda":
                 pipeline.model = pipeline.model.half()
+            logger.info("Pyannote diarization model loaded successfully")
             return pipeline.to(self.device)
         except AttributeError as e:
             if "'NoneType' object has no attribute 'eval'" in str(e):
@@ -43,10 +48,10 @@ class Diarizer:
     def _ensure_vad_loaded(self):
         """Lazy loading of VAD model."""
         if self.vad_model is None:
-            print("Loading VAD model...")
-            self.vad_model, self.vad_utils = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad", 
-                model="silero_vad", 
+            logger.info("Loading Silero VAD model")
+            self.vad_model, self.vad_utils = torch.hub.load(  # type: ignore
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
                 force_reload=False
             )
 
@@ -56,13 +61,16 @@ class Diarizer:
             raise RuntimeError(
                 "Diarization pipeline not initialized. Check if method is 'pyannote'."
             )
-        print("Processing segment with 'pyannote' method...")
+        
         diarization_params = {}
         if min_speakers is not None:
             diarization_params["min_speakers"] = min_speakers
         if max_speakers is not None:
             diarization_params["max_speakers"] = max_speakers
-            
+        
+        param_log = ", ".join([f"{k}={v}" for k, v in diarization_params.items()])
+        logger.info(f"Processing audio with pyannote diarization ({param_log if param_log else 'default params'})")
+
         diarization_result = self.diarization_pipeline(
             {"waveform": torch.from_numpy(audio_data).unsqueeze(0), "sample_rate": self.rate},
             **diarization_params
@@ -79,22 +87,20 @@ class Diarizer:
                 # This else block runs if the loop completes without finding an annotation.
                 raise TypeError(f"Could not find an annotation object in the diarization result: {diarization_result}")
         segments_list = list(annotation.itertracks(yield_label=True))
-        unique_speakers = set(speaker_label for _, _, speaker_label in segments_list)
-        print(f"Found {len(segments_list)} speech segments from {len(unique_speakers)} speakers.")
         return segments_list
 
     def diarize_cluster(self, audio_data, speaker_manager, similarity_threshold, max_speakers=None):
         """Diarize using VAD and clustering."""
-        print("Segmenting speech with Silero VAD...")
+        logger.info("Segmenting speech with Silero VAD")
         self._ensure_vad_loaded()
         assert self.vad_utils is not None, "VAD utils should be loaded by _ensure_vad_loaded"
-        (get_speech_timestamps, _, _, _, _) = self.vad_utils
+        get_speech_timestamps = self.vad_utils['get_speech_timestamps']
         speech_timestamps = get_speech_timestamps(
             torch.from_numpy(audio_data), self.vad_model, sampling_rate=self.rate
         )
-        print(f"VAD found {len(speech_timestamps)} speech segments.")
+        logger.info(f"VAD found {len(speech_timestamps)} potential speech segments")
 
-        print("Identifying speakers with clustering...")
+        logger.info("Filtering and preparing segments for speaker embedding...")
         try:
             from sklearn.cluster import AgglomerativeClustering
             from sklearn.preprocessing import normalize
@@ -115,25 +121,38 @@ class Diarizer:
             audio_segments_for_batch.append(audio_segment)
 
         if not valid_segments_info:
+            logger.warning("No valid speech segments found after filtering.")
             return [], 0
-
+        
+        logger.info(f"Extracted {len(audio_segments_for_batch)} valid segments for embedding.")
         all_embeddings = speaker_manager.get_embeddings(audio_segments_for_batch)
 
         if all_embeddings.size == 0:
+            logger.warning("Speaker embedding extraction resulted in no embeddings.")
             return [], 0
 
         if all_embeddings.ndim == 3 and all_embeddings.shape[1] == 1:
             all_embeddings = all_embeddings.squeeze(1)
 
+        logger.info("Identifying speakers with Agglomerative Clustering...")
         normalized_embeddings = normalize(all_embeddings, norm="l2", axis=1)
-        clustering = AgglomerativeClustering(
-            n_clusters=max_speakers if max_speakers else None,
-            metric="cosine", linkage="average",
-            distance_threshold=1 - similarity_threshold if not max_speakers else None
-        ).fit(normalized_embeddings)
+        
+        clustering_params: Dict[str, Any] = {
+            "metric": "cosine",
+            "linkage": "average"
+        }
+        if max_speakers:
+            clustering_params["n_clusters"] = max_speakers
+            logger.info(f"Clustering with a fixed number of speakers: {max_speakers}")
+        else:
+            clustering_params["distance_threshold"] = 1 - similarity_threshold
+            logger.info(f"Clustering with similarity threshold: {similarity_threshold}")
+
+        clustering = AgglomerativeClustering(**clustering_params).fit(normalized_embeddings)
         
         cluster_labels = clustering.labels_
         found_speakers = len(set(cluster_labels))
+        logger.info(f"Clustering identified {found_speakers} unique speakers.")
         
         segments_with_speakers = [{
             "speaker_label": f"SPEAKER_{label:02d}",

@@ -3,6 +3,9 @@
 import argparse
 import warnings
 from . import config
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 def parse_args():
     """Parses command-line arguments."""

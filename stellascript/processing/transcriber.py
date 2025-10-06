@@ -26,16 +26,16 @@ class Transcriber:
     def _load_models(self):
         """Load transcription model(s) based on engine configuration."""
         if self.engine in ["faster-whisper", "auto"]:
-            logger.info("Loading faster-whisper model...")
+            logger.info(f"Loading faster-whisper model '{self.model_id}'...")
             compute_type = "float16" if self.device.type == "cuda" else "float32"
             self.faster_whisper_model = WhisperModel(
                 self.model_id, device=self.device.type, compute_type=compute_type
             )
+            logger.info(f"Faster-whisper model '{self.model_id}' loaded successfully on {self.device.type} with {compute_type} compute type.")
 
         if self.engine in ["transformers", "auto"]:
-            logger.info("Loading transformers Whisper model...")
-            
             model_name = f"openai/whisper-{self.model_id}"
+            logger.info(f"Loading transformers model '{model_name}'...")
             torch_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
             
             self.transformers_pipeline = pipeline(
@@ -44,13 +44,13 @@ class Transcriber:
                 torch_dtype=torch_dtype,
                 device=self.device,
             )
+            logger.info(f"Transformers model '{model_name}' loaded successfully on {self.device.type} with {torch_dtype} dtype.")
 
         if self.engine == "auto":
-            logger.info(f"Auto-selection enabled: segments <{self.auto_engine_threshold}s will use transformers, >=<{self.auto_engine_threshold}s will use faster-whisper")
-        elif self.engine == "faster-whisper":
-            logger.info("Using faster-whisper for all segments")
+            logger.info(f"Transcription engine mode: 'auto' (threshold: {self.auto_engine_threshold}s)")
+            logger.info(f"Segments < {self.auto_engine_threshold}s will use 'transformers', longer segments will use 'faster-whisper'.")
         else:
-            logger.info("Using transformers for all segments")
+            logger.info(f"Transcription engine mode: '{self.engine}' (all segments).")
 
     def transcribe_segment(self, audio_data, rate, padding_duration):
         """Transcribe audio segment with intelligent engine selection."""
@@ -66,16 +66,16 @@ class Transcriber:
         padded_audio = np.concatenate([silence_padding, audio_data, silence_padding])
         padded_duration = len(padded_audio) / rate
         
-        logger.debug(f"Original duration: {audio_duration:.2f}s, padded duration: {padded_duration:.2f}s")
-        
         if self.engine == "auto":
             use_transformers = audio_duration < self.auto_engine_threshold
             engine_name = "transformers" if use_transformers else "faster-whisper"
-            logger.debug(f"Auto-selecting {engine_name} for {audio_duration:.2f}s segment (threshold: {self.auto_engine_threshold}s)")
+            logger.info(f"Transcribing a {audio_duration:.2f}s segment with '{engine_name}' (auto-selected).")
         elif self.engine == "transformers":
             use_transformers = True
+            logger.info(f"Transcribing a {audio_duration:.2f}s segment with 'transformers'.")
         else:
             use_transformers = False
+            logger.info(f"Transcribing a {audio_duration:.2f}s segment with 'faster-whisper'.")
         
         if use_transformers:
             return self._transcribe_with_transformers(padded_audio, rate)

@@ -5,6 +5,9 @@ import numpy as np
 import torch
 import torchaudio
 from df.enhance import enhance, init_df
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class AudioEnhancer:
     def __init__(self, enhancement_method, device, rate):
@@ -22,11 +25,11 @@ class AudioEnhancer:
 
         if self.enhancement_method == "deepfilternet":
             if self.df_model is None:
-                print("Loading DeepFilterNet denoiser...")
+                logger.info("Loading DeepFilterNet denoiser model")
                 try:
                     self.df_model, self.df_state, _ = init_df()
                 except Exception as e:
-                    warnings.warn(f"Failed to load DeepFilterNet model: {e}. Skipping enhancement.")
+                    logger.warning(f"Failed to load DeepFilterNet model: {e} - skipping enhancement")
                     return audio_data
             
             # Convert to torch tensor, add channel dimension for mono audio
@@ -67,12 +70,12 @@ class AudioEnhancer:
                 from demucs.pretrained import get_model
                 from demucs.apply import apply_model
             except ImportError as e:
-                print(f"!!! DEMUCS IMPORT FAILED: {e} !!!")
-                warnings.warn("Demucs not installed. Please run 'uv sync'. Skipping enhancement.")
+                logger.error(f"Demucs import failed: {e}")
+                logger.warning("Demucs not installed - please run 'uv sync' - skipping enhancement")
                 return audio_data
 
             if self.demucs_model is None:
-                print("Loading Demucs model for audio separation...")
+                logger.info("Loading Demucs model for audio separation")
                 self.demucs_model = get_model('htdemucs')
                 self.demucs_model.to(self.device)
                 self.demucs_model.eval()
@@ -97,18 +100,18 @@ class AudioEnhancer:
             
             audio_tensor = audio_tensor.unsqueeze(0).to(self.device)
             
-            print("Applying Demucs model...")
+            logger.info("Applying Demucs model for audio separation")
             with torch.no_grad():
                 sources = apply_model(
-                    self.demucs_model, 
+                    self.demucs_model,
                     audio_tensor,
                     split=True,
                     overlap=0.25
                 )
-            
+
             vocals = sources[0, 3]
             vocals_mono_tensor = vocals.mean(dim=0)
-            
+
             if self.rate != 44100:
                 resampler_back = torchaudio.transforms.Resample(
                     orig_freq=44100,
@@ -121,8 +124,8 @@ class AudioEnhancer:
                 vocals_mono_tensor = vocals_mono_tensor / max_val
 
             vocals_mono = vocals_mono_tensor.cpu().numpy().astype(np.float32)
-            
-            print("Demucs processing complete.")
+
+            logger.info("Demucs audio separation completed")
             return vocals_mono
 
         else:

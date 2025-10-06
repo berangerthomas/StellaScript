@@ -2,6 +2,9 @@
 
 import pyaudio
 from contextlib import contextmanager
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class AudioCapture:
     def __init__(self, format, channels, rate, chunk):
@@ -55,7 +58,7 @@ class AudioCapture:
                         
                         # Si le thread n'a pas fini, on continue quand même
                         if stop_thread.is_alive():
-                            print("Stream stop timed out, continuing anyway...")
+                            logger.warning("Stream stop timed out, continuing anyway")
                 except Exception:
                     pass
                 

@@ -8,7 +8,6 @@ import traceback
 import warnings
 import wave
 from datetime import datetime, timedelta
-from logging import getLogger, basicConfig, INFO
 
 import numpy as np
 import torch
@@ -22,6 +21,7 @@ from .audio.enhancement import AudioEnhancer
 from .processing.diarizer import Diarizer
 from .processing.speaker_manager import SpeakerManager
 from .processing.transcriber import Transcriber
+from .logging_config import get_logger
 
 warnings.filterwarnings("ignore", message=".*torchaudio._backend.list_audio_backends.*")
 warnings.filterwarnings("ignore", message=".*torch.cuda.amp.custom_fwd.*")
@@ -31,9 +31,7 @@ warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained' was
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_LOCAL_DIR_IS_SYMLINK_SUPPORTED"] = "0"
 
-# Configure logging
-basicConfig(level=INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = getLogger(__name__)
+logger = get_logger(__name__)
 
 class StellaScriptTranscription:
     def __init__(
@@ -223,6 +221,7 @@ class StellaScriptTranscription:
 
     def _process_transcription_pyannote(self, chunk_id, audio_data):
         pyannote_segments = self.diarizer.diarize_pyannote(audio_data)
+        logger.debug(f"Diarization found {len(pyannote_segments)} segments.")
         
         initial_segments = []
         for turn, _, speaker in pyannote_segments:
@@ -283,7 +282,11 @@ class StellaScriptTranscription:
                 "turn": Segment(start_time, end_time),
                 "audio_segment": merged_audio,
             })
-            
+        
+        if len(segments_list) != len(final_segments):
+            logger.info(f"Merged {len(segments_list)} segments into {len(final_segments)} final segments.")
+        else:
+            logger.info("No consecutive segments from the same speaker to merge.")
         return final_segments
 
     def _transcribe_and_display(self, segment_info, total_segments=0, current_segment_num=0):
@@ -291,10 +294,18 @@ class StellaScriptTranscription:
         speaker_label = segment_info["speaker_label"]
         speaker_audio_segment = segment_info["audio_segment"]
 
-        if len(speaker_audio_segment) < int(0.5 * config.RATE): return
+        if len(speaker_audio_segment) < int(0.5 * config.RATE):
+            return
 
-        transcription = self.transcriber.transcribe_segment(speaker_audio_segment, config.RATE, config.TRANSCRIPTION_PADDING_S)
-        if not transcription or transcription.isspace(): return
+        progress = f"({current_segment_num}/{total_segments})" if total_segments > 0 else ""
+        logger.info(f"Transcribing segment {progress} for {speaker_label}...")
+
+        transcription = self.transcriber.transcribe_segment(
+            speaker_audio_segment, config.RATE, config.TRANSCRIPTION_PADDING_S
+        )
+        if not transcription or transcription.isspace():
+            logger.warning(f"Transcription for segment {progress} resulted in empty text.")
+            return
 
         chunk_start_time = self.chunk_timestamps.get(self.chunk_counter - 1, {}).get("start", 0)
         
@@ -307,10 +318,10 @@ class StellaScriptTranscription:
         duration = turn.end - turn.start
         
         log_message = (
-            f"Transcription of a {duration:.2f}s segment with [{self.transcriber.model_id}], "
-            f"from {start_hms} to {end_hms}"
+            f"Transcribed a {duration:.2f}s segment with [{self.transcriber.model_id}], "
+            f"from {start_hms} to {end_hms}. Text: '{transcription[:80]}...'"
         )
-        logger.info(log_message)
+        logger.debug(log_message)
 
         timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
 
@@ -322,13 +333,13 @@ class StellaScriptTranscription:
                 self.transcription_buffer.update({"speaker": speaker_label, "timestamp": timestamp, "text": transcription})
         else:
             line = f"[{timestamp}][{speaker_label}] {transcription}\n"
-            logger.info(f"Live: {line.strip()}")
+            logger.debug(f"Live: {line.strip()}")
             self._write_to_file(line, force_flush=True)
 
     def _flush_transcription_buffer(self):
         if self.transcription_buffer["speaker"] and self.transcription_buffer["text"]:
             line = f"[{self.transcription_buffer['timestamp']}][{self.transcription_buffer['speaker']}] {self.transcription_buffer['text'].strip()}\n"
-            logger.info(f"Finalized: {line.strip()}")
+            logger.debug(f"Finalized: {line.strip()}")
             self._write_to_file(line, force_flush=True)
             self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
 
@@ -386,23 +397,32 @@ class StellaScriptTranscription:
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{milliseconds:03}"
 
     def transcribe_file(self, file_path):
-        logger.info(f"Transcribing file: {file_path}")
+        logger.info(f"Starting transcription for file: {file_path}")
         
         try:
             # --- Audio Loading and Enhancement ---
-            logger.info(f"{'************ 1/3 Audio Loading and Enhancement ************':^100}")
+            logger.info("************ 1/4 Audio Loading and Enhancement ************")
             audio_data, rate = torchaudio.load(file_path)
+            duration_seconds = audio_data.shape[-1] / rate
+            logger.info(f"Loaded audio file '{os.path.basename(file_path)}' ({duration_seconds:.2f}s)")
+
             if rate != config.RATE:
+                logger.info(f"Resampling audio from {rate}Hz to {config.RATE}Hz")
                 resampler = torchaudio.transforms.Resample(orig_freq=rate, new_freq=config.RATE)
                 audio_data = resampler(audio_data)
             
-            audio_data = torch.mean(audio_data, dim=0)
-            enhanced_audio = self.enhancer.apply(audio_data.numpy().astype(np.float32))
+            if audio_data.dim() > 1 and audio_data.shape[0] > 1:
+                logger.info("Audio has multiple channels, converting to mono.")
+                audio_data = torch.mean(audio_data, dim=0, keepdim=True)
+
+            audio_data_np = audio_data.squeeze().numpy().astype(np.float32)
+            logger.info(f"Applying audio enhancement: '{self.enhancement_method}'")
+            enhanced_audio = self.enhancer.apply(audio_data_np)
             if self.save_enhanced_audio and self.enhancement_method != 'none':
                 self._save_enhanced_audio(file_path, enhanced_audio, self.enhancement_method)
 
             # --- Diarization ---
-            logger.info(f"{'************ 2/3 Diarization by [' + str(self.diarization_method) + '] ************':^100}")
+            logger.info(f"************ 2/4 Diarization by [{self.diarization_method}] ************")
             initial_segments = []
             found_speakers = 0
             if self.diarization_method == "pyannote":
@@ -411,6 +431,10 @@ class StellaScriptTranscription:
                 )
                 if pyannote_segments:
                     found_speakers = len(set(s[2] for s in pyannote_segments))
+                    logger.info(f"Pyannote found {len(pyannote_segments)} speech segments from {found_speakers} speakers.")
+                else:
+                    logger.warning("Pyannote did not find any speech segments.")
+
                 # Standardize the output
                 for turn, _, speaker in pyannote_segments:
                     audio_segment = enhanced_audio[int(turn.start * config.RATE):int(turn.end * config.RATE)]
@@ -419,18 +443,21 @@ class StellaScriptTranscription:
                         "turn": turn, "speaker_label": speaker, "audio_segment": audio_segment
                     })
             elif self.diarization_method == "cluster":
+                logger.info("Starting clustering-based diarization...")
                 initial_segments, found_speakers = self.diarizer.diarize_cluster(
                     enhanced_audio, self.speaker_manager, self.similarity_threshold, self.max_speakers
                 )
+                logger.info(f"Clustering found {len(initial_segments)} speech segments from {found_speakers} speakers.")
 
             self.filename = self._generate_filename(file_path, found_speakers)
             self._init_output_file()
 
             # --- Merge Consecutive Segments ---
+            logger.info("************ 3/4 Merging Segments ************")
             merged_segments = self._merge_consecutive_segments(initial_segments)
 
             # --- Transcription and Buffering ---
-            logger.info(f"{'************ 3/3 Transcription by [' + str(self.model_id) + '] ************':^100}")
+            logger.info(f"************ 4/4 Transcription by [{self.model_id}] ************")
             total_segments = len(merged_segments)
             for i, segment_info in enumerate(merged_segments):
                 self._transcribe_and_display(segment_info, total_segments, i + 1)
