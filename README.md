@@ -81,8 +81,8 @@ This method ensures that each chunk sent for transcription contains coherent con
 
 | Argument | Default | Description |
 |---|---|---|
-| `--language <lang>` | `fr` | Language code (e.g., `en`, `es`, `de`). |
-| `--model <id>` | `large-v3` | Whisper model [[1]](#1). Choices: `tiny`, `base`, `small`, `medium`, `large-v1/v2/v3`, and distilled variants. |
+| `--language <lang>` | `fr` | Language code (e.g., `en`, `es`, `de`, `fr`, `nl`, `pt`, `ro`, etc.). |
+| `--model <id>` | `large-v3` | Whisper model [[1]](#1). Choices: `tiny`, `base`, `small`, `medium`, `large`, `large-v1/v2/v3`, and distilled variants : `tiny.en`, `base.en`, `small.en`, `medium.en`, `distil-large-v2`, `distil-medium.en`, `distil-small.en`. |
 | `--file <path>` | `None` | Path to a `.wav` file. If omitted, runs in live mode. |
 | `--mode <mode>` | `subtitle` | Output mode. Choices: `subtitle`, `transcription`. |
 | `--diarization <method>` | `pyannote` | Diarization method. Choices: `pyannote`, `cluster`. |
@@ -100,12 +100,7 @@ This method ensures that each chunk sent for transcription contains coherent con
 **Goal**: Low-latency, real-time captions for a single speaker.
 **Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.6`) prevents voice modulation from creating a new speaker identity. `deepfilternet` provides lightweight noise reduction.
 ```bash
-python main.py \
-  --mode subtitle \
-  --language en \
-  --diarization cluster \
-  --threshold 0.6 \
-  --enhancement deepfilternet
+python main.py --mode subtitle --language en --diarization cluster --threshold 0.6 --enhancement deepfilternet
 ```
 
 ### Scenario 2: Generating a Transcript of a Recorded Interview
@@ -113,11 +108,7 @@ python main.py \
 **Goal**: High-accuracy transcript of a 2-person conversation.
 **Rationale**: `pyannote` is highly accurate for diarization. Specifying `--min-speakers 2 --max-speakers 2` constrains the model for optimal results. `transcription` mode creates a clean, readable document.
 ```bash
-python main.py \
-  --file "interview.wav" \
-  --mode transcription \
-  --min-speakers 2 \
-  --max-speakers 2
+python main.py --mode transcription --file "interview.wav" --min-speakers 2 --max-speakers 2
 ```
 
 ### Scenario 3: Transcribing a Noisy Field Recording
@@ -125,11 +116,7 @@ python main.py \
 **Goal**: Extract intelligible speech from a noisy environment.
 **Rationale**: `demucs` is a powerful source separation model that can isolate vocals. The resulting audio may be fragmented, so the `transformers` engine is used for its stability on short segments.
 ```bash
-python main.py \
-  --file "field_recording.wav" \
-  --mode transcription \
-  --enhancement demucs \
-  --transcription-engine transformers
+python main.py --mode transcription --file "field_recording.wav" --enhancement demucs --transcription-engine transformers
 ```
 
 ### Scenario 4: Processing a Multi-Speaker Focus Group Recording
@@ -137,10 +124,7 @@ python main.py \
 **Goal**: Transcribe a complex conversation with an unknown number of speakers.
 **Rationale**: `pyannote` excels in complex, multi-speaker scenarios. The default `auto` engine will balance speed and accuracy across varying segment lengths.
 ```bash
-python main.py \
-  --file "focus_group.wav" \
-  --mode transcription \
-  --diarization pyannote
+python main.py --mode transcription --file "focus_group.wav" --diarization pyannote
 ```
 
 ## Output File Naming
