@@ -286,8 +286,8 @@ class StellaScriptTranscription:
             is_same_speaker = current_segment["speaker_label"] == last_in_group["speaker_label"]
             time_gap = current_segment["turn"].start - last_in_group["turn"].end
             
-            # In 'transcription' mode, always merge. In 'subtitle' mode, merge on small gaps.
-            should_merge = is_same_speaker and (self.mode == "transcription" or time_gap < config.MAX_MERGE_GAP_S)
+            # Merge segments from the same speaker if the gap between them is small.
+            should_merge = is_same_speaker and time_gap < config.MAX_MERGE_GAP_S
 
             if should_merge:
                 current_group.append(current_segment)
@@ -317,8 +317,60 @@ class StellaScriptTranscription:
         if len(segments_list) != len(final_segments):
             logger.info(f"Merged {len(segments_list)} segments into {len(final_segments)} final segments.")
         else:
-            logger.info("No consecutive segments from the same speaker to merge.")
+            logger.debug("No consecutive segments from the same speaker to merge.")
         return final_segments
+
+    def _chunk_for_transcription(self, segments_list):
+        """
+        Chunks diarized segments for transcription mode. It creates larger chunks
+        of a target duration and then merges same-speaker segments within those chunks.
+        """
+        if not segments_list:
+            return []
+
+        logger.info(f"Chunking {len(segments_list)} segments for transcription...")
+        all_merged_segments = []
+        current_chunk_group = []
+        current_chunk_duration = 0.0
+
+        for i, segment in enumerate(segments_list):
+            segment_duration = segment["turn"].end - segment["turn"].start
+
+            # If adding the current segment would exceed the max duration, process the current chunk.
+            if current_chunk_group and (current_chunk_duration + segment_duration > config.MAX_CHUNK_DURATION_S):
+                logger.debug(f"Chunk full (max duration). Processing {len(current_chunk_group)} segments.")
+                merged_in_chunk = self._merge_consecutive_segments(current_chunk_group)
+                all_merged_segments.extend(merged_in_chunk)
+                current_chunk_group = []
+                current_chunk_duration = 0.0
+
+            current_chunk_group.append(segment)
+            current_chunk_duration += segment_duration
+
+            # If the chunk is over the target duration, look for a good split point.
+            if current_chunk_duration >= config.TARGET_CHUNK_DURATION_S:
+                is_last_segment = (i == len(segments_list) - 1)
+                if not is_last_segment:
+                    next_segment = segments_list[i + 1]
+                    is_speaker_change = segment["speaker_label"] != next_segment["speaker_label"]
+                    silence_gap = next_segment["turn"].start - segment["turn"].end
+                    is_long_silence = silence_gap > config.MIN_SILENCE_GAP_S
+
+                    if is_speaker_change or is_long_silence:
+                        logger.debug(f"Found split point. Processing {len(current_chunk_group)} segments.")
+                        merged_in_chunk = self._merge_consecutive_segments(current_chunk_group)
+                        all_merged_segments.extend(merged_in_chunk)
+                        current_chunk_group = []
+                        current_chunk_duration = 0.0
+        
+        # Process the final remaining chunk
+        if current_chunk_group:
+            logger.debug(f"Processing final chunk of {len(current_chunk_group)} segments.")
+            merged_in_chunk = self._merge_consecutive_segments(current_chunk_group)
+            all_merged_segments.extend(merged_in_chunk)
+
+        logger.info(f"Re-chunked into {len(all_merged_segments)} segments for transcription.")
+        return all_merged_segments
 
     def _transcribe_and_display(self, segment_info, total_segments=0, current_segment_num=0):
         assert self.transcriber is not None
@@ -378,8 +430,9 @@ class StellaScriptTranscription:
     def _generate_filename(self, base_name=None, found_speakers=None):
         model_name_safe = self.model_id.replace("/", "_")
         base = os.path.splitext(os.path.basename(base_name))[0] if base_name else "live"
-        parts = [base, self.mode, model_name_safe, self.diarization_method]
         
+        parts = [base, self.mode, model_name_safe, self.diarization_method]
+
         details = []
         if self.diarization_method == 'pyannote':
             if self.min_speakers is not None:
@@ -393,14 +446,17 @@ class StellaScriptTranscription:
 
         if found_speakers is not None:
             details.append(f"{found_speakers}-speakers")
-        
+
         if details:
             parts.append("_".join(details))
 
         if not base_name:
             parts.append(datetime.now().strftime('%Y%m%d_%H%M%S'))
-            
-        return "_".join(parts) + ".txt"
+
+        # Filter out any None or empty strings before joining
+        filename = "_".join(filter(None, parts)) + ".txt"
+        logger.debug(f"Generated filename: {filename}")
+        return filename
 
     def _save_enhanced_audio(self, original_path, audio_data, enhancement_method):
         """Saves the enhanced audio to a new file."""
@@ -494,8 +550,14 @@ class StellaScriptTranscription:
             self._init_output_file()
 
             # --- Merge Consecutive Segments ---
-            logger.info("************ 3/4 Merging Segments ************")
-            merged_segments = self._merge_consecutive_segments(initial_segments)
+            logger.info("************ 3/4 Merging/Chunking Segments ************")
+            if self.mode == 'subtitle':
+                # For subtitle mode, use segments as they are from the diarizer.
+                merged_segments = initial_segments
+                logger.info("Subtitle mode: Using diarizer's original segmentation.")
+            else:
+                # For transcription mode, perform chunking.
+                merged_segments = self._chunk_for_transcription(initial_segments)
 
             # --- Transcription and Buffering ---
             logger.info(f"************ 4/4 Transcription by [{self.model_id}] ************")
