@@ -8,6 +8,7 @@ import traceback
 import warnings
 import wave
 from datetime import datetime, timedelta
+from logging import getLogger, basicConfig, INFO
 
 import numpy as np
 import torch
@@ -30,6 +31,10 @@ warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained' was
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_LOCAL_DIR_IS_SYMLINK_SUPPORTED"] = "0"
 
+# Configure logging
+basicConfig(level=INFO, format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = getLogger(__name__)
+
 class StellaScriptTranscription:
     def __init__(
         self,
@@ -46,7 +51,7 @@ class StellaScriptTranscription:
         save_enhanced_audio=False,
         save_recorded_audio=False,
     ):
-        print("Launching StellaScriptTranscription...")
+        logger.info("Launching StellaScriptTranscription...")
         self.model_id = model_id
         self.language = language
         self.mode = mode
@@ -61,8 +66,13 @@ class StellaScriptTranscription:
         load_dotenv()
         hf_token = os.getenv("HUGGING_FACE_TOKEN")
 
+        if diarization_method == "pyannote" and not hf_token:
+            logger.warning("HUGGING_FACE_TOKEN not found. Falling back to 'cluster' diarization method.")
+            diarization_method = "cluster"
+            self.diarization_method = "cluster"
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
+        logger.info(f"Using device: {self.device}")
 
         # Instantiate modules
         self.transcriber = Transcriber(
@@ -94,7 +104,7 @@ class StellaScriptTranscription:
             chunk=config.CHUNK,
         )
         
-        print("All models loaded successfully.")
+        logger.info("All models loaded successfully.")
         self._setup_audio_config()
         self._setup_buffers_and_queues()
 
@@ -177,28 +187,28 @@ class StellaScriptTranscription:
             else:
                 self._process_transcription_pyannote(chunk_id, audio_data)
         except Exception:
-            print(f"Error during transcription of segment {chunk_id}:")
+            logger.error(f"Error during transcription of segment {chunk_id}:")
             traceback.print_exc()
         finally:
             if chunk_id in self.chunk_timestamps:
                 del self.chunk_timestamps[chunk_id]
 
     def _process_transcription_cluster(self, chunk_id, audio_data):
-        print(f"DEBUG: Processing segment {chunk_id} with live 'cluster' method.")
+        logger.debug(f"Processing segment {chunk_id} with live 'cluster' method.")
         try:
             embeddings = self.speaker_manager.get_embeddings([audio_data])
             if not embeddings: return
             embedding_np = embeddings[0]
         except Exception as e:
-            print(f"DEBUG: Could not get embedding for segment {chunk_id}: {e}")
+            logger.debug(f"Could not get embedding for segment {chunk_id}: {e}")
             return
 
         assigned_speaker = self.speaker_manager.get_speaker_id(embedding_np)
         if assigned_speaker is None:
-            print(f"DEBUG: Could not assign speaker for segment {chunk_id}.")
+            logger.debug(f"Could not assign speaker for segment {chunk_id}.")
             return
 
-        print(f"DEBUG: Identified segment {chunk_id} as {assigned_speaker}")
+        logger.debug(f"Identified segment {chunk_id} as {assigned_speaker}")
         if len(audio_data) < int(0.5 * config.RATE): return
 
         transcription = self.transcriber.transcribe_segment(audio_data, config.RATE, config.TRANSCRIPTION_PADDING_S)
@@ -208,7 +218,7 @@ class StellaScriptTranscription:
         elapsed_seconds = chunk_start_time
         timestamp = self._calculate_video_timestamp(elapsed_seconds)
         line = f"[{timestamp}][{assigned_speaker}] {transcription}\n"
-        print(f"Live: {line.strip()}")
+        logger.info(f"Live: {line.strip()}")
         self._write_to_file(line, force_flush=True)
 
     def _process_transcription_pyannote(self, chunk_id, audio_data):
@@ -276,7 +286,7 @@ class StellaScriptTranscription:
             
         return final_segments
 
-    def _transcribe_and_display(self, segment_info):
+    def _transcribe_and_display(self, segment_info, total_segments=0, current_segment_num=0):
         turn = segment_info["turn"]
         speaker_label = segment_info["speaker_label"]
         speaker_audio_segment = segment_info["audio_segment"]
@@ -287,8 +297,22 @@ class StellaScriptTranscription:
         if not transcription or transcription.isspace(): return
 
         chunk_start_time = self.chunk_timestamps.get(self.chunk_counter - 1, {}).get("start", 0)
-        elapsed_seconds = chunk_start_time + turn.start
-        timestamp = self._calculate_video_timestamp(elapsed_seconds)
+        
+        start_time_obj = timedelta(seconds=chunk_start_time + turn.start)
+        end_time_obj = timedelta(seconds=chunk_start_time + turn.end)
+        
+        start_hms = self._format_timedelta(start_time_obj)
+        end_hms = self._format_timedelta(end_time_obj)
+        
+        duration = turn.end - turn.start
+        
+        log_message = (
+            f"Transcription of a {duration:.2f}s segment with [{self.transcriber.model_id}], "
+            f"from {start_hms} to {end_hms}"
+        )
+        logger.info(log_message)
+
+        timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
 
         if self.mode == "transcription":
             if self.transcription_buffer["speaker"] == speaker_label:
@@ -298,13 +322,13 @@ class StellaScriptTranscription:
                 self.transcription_buffer.update({"speaker": speaker_label, "timestamp": timestamp, "text": transcription})
         else:
             line = f"[{timestamp}][{speaker_label}] {transcription}\n"
-            print(f"Live: {line.strip()}")
+            logger.info(f"Live: {line.strip()}")
             self._write_to_file(line, force_flush=True)
 
     def _flush_transcription_buffer(self):
         if self.transcription_buffer["speaker"] and self.transcription_buffer["text"]:
             line = f"[{self.transcription_buffer['timestamp']}][{self.transcription_buffer['speaker']}] {self.transcription_buffer['text'].strip()}\n"
-            print(f"Finalized: {line.strip()}")
+            logger.info(f"Finalized: {line.strip()}")
             self._write_to_file(line, force_flush=True)
             self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
 
@@ -349,15 +373,24 @@ class StellaScriptTranscription:
                 wf.setframerate(config.RATE)
                 wf.writeframes(scaled.tobytes())
             
-            print(f"Enhanced audio saved to {new_path}")
+            logger.info(f"Enhanced audio saved to {new_path}")
         except Exception as e:
-            print(f"Error saving enhanced audio: {e}")
+            logger.error(f"Error saving enhanced audio: {e}")
+
+    def _format_timedelta(self, td):
+        """Formats a timedelta object into HH:MM:SS.ms."""
+        total_seconds = td.total_seconds()
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        milliseconds = td.microseconds // 1000
+        return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{milliseconds:03}"
 
     def transcribe_file(self, file_path):
-        print(f"Transcribing file: {file_path}")
+        logger.info(f"Transcribing file: {file_path}")
         
         try:
             # --- Audio Loading and Enhancement ---
+            logger.info(f"{'************ 1/3 Audio Loading and Enhancement ************':^100}")
             audio_data, rate = torchaudio.load(file_path)
             if rate != config.RATE:
                 resampler = torchaudio.transforms.Resample(orig_freq=rate, new_freq=config.RATE)
@@ -369,6 +402,7 @@ class StellaScriptTranscription:
                 self._save_enhanced_audio(file_path, enhanced_audio, self.enhancement_method)
 
             # --- Diarization ---
+            logger.info(f"{'************ 2/3 Diarization by [' + str(self.diarization_method) + '] ************':^100}")
             initial_segments = []
             found_speakers = 0
             if self.diarization_method == "pyannote":
@@ -396,17 +430,18 @@ class StellaScriptTranscription:
             merged_segments = self._merge_consecutive_segments(initial_segments)
 
             # --- Transcription and Buffering ---
-            print("\n--- Transcription ---")
-            for segment_info in merged_segments:
-                self._transcribe_and_display(segment_info)
+            logger.info(f"{'************ 3/3 Transcription by [' + str(self.model_id) + '] ************':^100}")
+            total_segments = len(merged_segments)
+            for i, segment_info in enumerate(merged_segments):
+                self._transcribe_and_display(segment_info, total_segments, i + 1)
 
             # --- Finalize ---
             self._flush_transcription_buffer()
             self._write_to_file("\n# Transcription complete.\n", force_flush=True)
-            print(f"\nTranscription finished. Results saved to {self.filename}")
+            logger.info(f"\nTranscription finished. Results saved to {self.filename}")
 
         except Exception as e:
-            print(f"An error occurred during file transcription: {e}")
+            logger.error(f"An error occurred during file transcription: {e}")
             traceback.print_exc()
         finally:
             if 0 in self.chunk_timestamps: del self.chunk_timestamps[0]
@@ -426,7 +461,7 @@ class StellaScriptTranscription:
                     break
                 continue
         
-        print("Transcription thread has finished processing all segments.")
+        logger.info("Transcription thread has finished processing all segments.")
 
     def _process_audio_stream(self, in_data, frame_count, time_info, status):
         if self.is_stopping:
@@ -500,14 +535,14 @@ class StellaScriptTranscription:
         
         self.audio_context = self.audio_capture.audio_stream(callback=self._process_audio_stream)
         self.stream = self.audio_context.__enter__()
-        print("Starting audio stream...")
+        logger.info("Starting audio stream...")
         if self.stream: self.stream.start_stream()
 
     def stop_recording(self):
         if not self.is_running or self.is_stopping:
             return
         
-        print("\nStopping recording...")
+        logger.info("\nStopping recording...")
         self.is_stopping = True # Signal to stop processing new audio chunks
         
         # Stop the audio stream first to prevent new data from the microphone
@@ -515,9 +550,9 @@ class StellaScriptTranscription:
             try:
                 # This will stop the callback from being called
                 self.audio_context.__exit__(None, None, None)
-                print("Audio stream stopped.")
+                logger.info("Audio stream stopped.")
             except Exception as e:
-                print(f"Error stopping audio stream: {e}")
+                logger.error(f"Error stopping audio stream: {e}")
         
         # Now that the stream is stopped, signal the transcription thread it can exit once the queue is empty
         self.is_running = False
@@ -533,7 +568,7 @@ class StellaScriptTranscription:
                 ts_start, 
                 now.timestamp()
             )
-            print(f"Queued final audio buffer ({duration:.2f}s) for processing.")
+            logger.info(f"Queued final audio buffer ({duration:.2f}s) for processing.")
             self.audio_buffer = np.array([], dtype=np.float32)
         
         # Process the final VAD buffer for 'subtitle' mode
@@ -548,22 +583,22 @@ class StellaScriptTranscription:
                     ts_start,
                     now.timestamp()
                 )
-                print(f"Queued final VAD speech buffer ({duration:.2f}s) for processing.")
+                logger.info(f"Queued final VAD speech buffer ({duration:.2f}s) for processing.")
                 self.vad_speech_buffer = np.array([], dtype=np.float32)
         
         # Wait for the transcription thread to process all items in the queue
         if hasattr(self, "transcribe_thread"):
-            print("Waiting for transcription thread to finish...")
+            logger.info("Waiting for transcription thread to finish...")
             self.transcribe_thread.join(timeout=10) # Wait up to 10 seconds
             if self.transcribe_thread.is_alive():
-                print("Warning: Transcription thread timed out. Some segments may be lost.")
+                logger.warning("Transcription thread timed out. Some segments may be lost.")
         
         # Flush the final merged text in 'transcription' mode
         if self.mode == "transcription":
             self._flush_transcription_buffer()
         
         self._write_to_file("\n# Transcription stopped.\n", force_flush=True)
-        print(f"Transcription finished. Results saved to {self.filename}")
+        logger.info(f"Transcription finished. Results saved to {self.filename}")
         
         self.is_stopping = False
 
@@ -577,4 +612,4 @@ class StellaScriptTranscription:
             wf.setsampwidth(2)
             wf.setframerate(config.RATE)
             wf.writeframes(scaled.tobytes())
-        print(f"Audio saved to {filename}")
+        logger.info(f"Audio saved to {filename}")

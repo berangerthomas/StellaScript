@@ -4,6 +4,9 @@ import numpy as np
 import torch
 from faster_whisper import WhisperModel
 from transformers import pipeline
+from logging import getLogger
+
+logger = getLogger(__name__)
 
 class Transcriber:
     def __init__(self, model_id, device, engine, auto_engine_threshold, language):
@@ -23,14 +26,14 @@ class Transcriber:
     def _load_models(self):
         """Load transcription model(s) based on engine configuration."""
         if self.engine in ["faster-whisper", "auto"]:
-            print("Loading faster-whisper model...")
+            logger.info("Loading faster-whisper model...")
             compute_type = "float16" if self.device.type == "cuda" else "float32"
             self.faster_whisper_model = WhisperModel(
                 self.model_id, device=self.device.type, compute_type=compute_type
             )
 
         if self.engine in ["transformers", "auto"]:
-            print("Loading transformers Whisper model...")
+            logger.info("Loading transformers Whisper model...")
             
             model_name = f"openai/whisper-{self.model_id}"
             torch_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
@@ -43,18 +46,18 @@ class Transcriber:
             )
 
         if self.engine == "auto":
-            print(f"Auto-selection enabled: segments <{self.auto_engine_threshold}s will use transformers, >=<{self.auto_engine_threshold}s will use faster-whisper")
+            logger.info(f"Auto-selection enabled: segments <{self.auto_engine_threshold}s will use transformers, >=<{self.auto_engine_threshold}s will use faster-whisper")
         elif self.engine == "faster-whisper":
-            print("Using faster-whisper for all segments")
+            logger.info("Using faster-whisper for all segments")
         else:
-            print("Using transformers for all segments")
+            logger.info("Using transformers for all segments")
 
     def transcribe_segment(self, audio_data, rate, padding_duration):
         """Transcribe audio segment with intelligent engine selection."""
         audio_duration = len(audio_data) / rate
         
         if audio_duration < 0.5:
-            print(f"DEBUG: Segment too short ({audio_duration:.2f}s), skipping")
+            logger.debug(f"Segment too short ({audio_duration:.2f}s), skipping")
             return ""
         
         padding_samples = int(padding_duration * rate)
@@ -63,12 +66,12 @@ class Transcriber:
         padded_audio = np.concatenate([silence_padding, audio_data, silence_padding])
         padded_duration = len(padded_audio) / rate
         
-        print(f"DEBUG: Original duration: {audio_duration:.2f}s, padded duration: {padded_duration:.2f}s")
+        logger.debug(f"Original duration: {audio_duration:.2f}s, padded duration: {padded_duration:.2f}s")
         
         if self.engine == "auto":
             use_transformers = audio_duration < self.auto_engine_threshold
             engine_name = "transformers" if use_transformers else "faster-whisper"
-            print(f"DEBUG: Auto-selecting {engine_name} for {audio_duration:.2f}s segment (threshold: {self.auto_engine_threshold}s)")
+            logger.debug(f"Auto-selecting {engine_name} for {audio_duration:.2f}s segment (threshold: {self.auto_engine_threshold}s)")
         elif self.engine == "transformers":
             use_transformers = True
         else:
@@ -82,7 +85,7 @@ class Transcriber:
     def _transcribe_with_faster_whisper(self, audio_data):
         """Transcribe with faster-whisper."""
         if self.faster_whisper_model is None:
-            print("Warning: faster-whisper model not loaded. Returning empty transcription.")
+            logger.warning("faster-whisper model not loaded. Returning empty transcription.")
             return ""
 
         segments, info = self.faster_whisper_model.transcribe(
@@ -114,12 +117,12 @@ class Transcriber:
         if len(words) > 10:
             unique_word_ratio = len(set(words)) / len(words)
             if unique_word_ratio < 0.3:
-                print(
-                    f"Warning: Low unique word ratio detected ({unique_word_ratio:.2f}). "
+                logger.warning(
+                    f"Low unique word ratio detected ({unique_word_ratio:.2f}). "
                     "The transcription may be repetitive."
                 )
-                print(f"Repetitive text sample: '{text[:100]}...'")
-                print(
+                logger.warning(f"Repetitive text sample: '{text[:100]}...'")
+                logger.warning(
                     "Suggestion: If this issue persists, consider adjusting the audio input "
                     "or using a different transcription engine if available."
                 )
@@ -128,7 +131,7 @@ class Transcriber:
 
     def _transcribe_with_transformers(self, audio_data, rate):
         if self.transformers_pipeline is None:
-            print("Warning: Transformers pipeline not loaded. Returning empty transcription.")
+            logger.warning("Transformers pipeline not loaded. Returning empty transcription.")
             return ""
             
         # The pipeline expects a dictionary with raw data and sampling rate
