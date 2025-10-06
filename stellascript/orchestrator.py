@@ -9,24 +9,8 @@ import warnings
 import wave
 from datetime import datetime, timedelta
 
-import numpy as np
-import torch
-import torchaudio
-from dotenv import load_dotenv
-from pyannote.core import Segment
-
-from . import config
-from .audio.capture import AudioCapture
-from .audio.enhancement import AudioEnhancer
-from .processing.diarizer import Diarizer
-from .processing.speaker_manager import SpeakerManager
-from .processing.transcriber import Transcriber
 from .logging_config import get_logger
-
-warnings.filterwarnings("ignore", message=".*torchaudio._backend.list_audio_backends.*")
-warnings.filterwarnings("ignore", message=".*torch.cuda.amp.custom_fwd.*")
-warnings.filterwarnings("ignore", message=".*huggingface_hub.*cache-system uses symlinks.*")
-warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained' was deprecated.*")
+from . import config
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_LOCAL_DIR_IS_SYMLINK_SUPPORTED"] = "0"
@@ -49,7 +33,8 @@ class StellaScriptTranscription:
         save_enhanced_audio=False,
         save_recorded_audio=False,
     ):
-        logger.info("Launching StellaScriptTranscription...")
+        logger.info("StellaScriptTranscription orchestrator initialized (modules not loaded yet).")
+        # Store configuration
         self.model_id = model_id
         self.language = language
         self.mode = mode
@@ -58,40 +43,88 @@ class StellaScriptTranscription:
         self.diarization_method = diarization_method
         self.similarity_threshold = similarity_threshold
         self.enhancement_method = enhancement_method
+        self.transcription_engine = transcription_engine
+        self.auto_engine_threshold = auto_engine_threshold
         self.save_enhanced_audio = save_enhanced_audio
         self.save_recorded_audio = save_recorded_audio
+
+        # Initialize modules to None for lazy loading
+        self.device = None
+        self.transcriber = None
+        self.diarizer = None
+        self.speaker_manager = None
+        self.enhancer = None
+        self.audio_capture = None
+        self.modules_initialized = False
+
+        # Setup basic configurations
+        self._setup_audio_config()
+        self._setup_buffers_and_queues()
+        self.chunk_timestamps = {}
+        self.chunk_counter = 0
+        self.is_running = False
+        self.is_stopping = False
+        self.start_time = None
+        self.filename = None
+        self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
+
+    def _initialize_modules(self):
+        """Initializes all heavy modules on demand."""
+        if self.modules_initialized:
+            return
+        
+        logger.info("First use detected, initializing all modules...")
+
+        # --- Defer heavy imports to this method ---
+        import numpy as np
+        import torch
+        import torchaudio
+        from dotenv import load_dotenv
+        from .audio.capture import AudioCapture
+        from .audio.enhancement import AudioEnhancer
+        from .processing.diarizer import Diarizer
+        from .processing.speaker_manager import SpeakerManager
+        from .processing.transcriber import Transcriber
         
         load_dotenv()
         hf_token = os.getenv("HUGGING_FACE_TOKEN")
 
-        if diarization_method == "pyannote" and not hf_token:
+        if self.diarization_method == "pyannote" and not hf_token:
             logger.warning("HUGGING_FACE_TOKEN not found. Falling back to 'cluster' diarization method.")
-            diarization_method = "cluster"
             self.diarization_method = "cluster"
+
+            if self.min_speakers is not None:
+                error_message = (
+                    "HUGGING_FACE_TOKEN is missing, causing a fallback to 'cluster' diarization, "
+                    "but '--min-speakers' is not supported in this mode. Please provide a token "
+                    "or remove the '--min-speakers' argument."
+                )
+                logger.error(error_message)
+                raise ValueError(error_message)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {self.device}")
 
         # Instantiate modules
         self.transcriber = Transcriber(
-            model_id=model_id,
+            model_id=self.model_id,
             device=self.device,
-            engine=transcription_engine,
-            auto_engine_threshold=auto_engine_threshold,
-            language=language,
+            engine=self.transcription_engine,
+            auto_engine_threshold=self.auto_engine_threshold,
+            language=self.language,
         )
         self.diarizer = Diarizer(
             device=self.device,
-            method=diarization_method,
+            method=self.diarization_method,
             hf_token=hf_token,
             rate=config.RATE,
         )
         self.speaker_manager = SpeakerManager(
             device=self.device,
-            similarity_threshold=similarity_threshold,
+            similarity_threshold=self.similarity_threshold,
         )
         self.enhancer = AudioEnhancer(
-            enhancement_method=enhancement_method,
+            enhancement_method=self.enhancement_method,
             device=self.device,
             rate=config.RATE,
         )
@@ -102,17 +135,8 @@ class StellaScriptTranscription:
             chunk=config.CHUNK,
         )
         
+        self.modules_initialized = True
         logger.info("All models loaded successfully.")
-        self._setup_audio_config()
-        self._setup_buffers_and_queues()
-
-        self.chunk_timestamps = {}
-        self.chunk_counter = 0
-        self.is_running = False
-        self.is_stopping = False  # Nouvelle variable pour éviter les races
-        self.start_time = None
-        self.filename = None
-        self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
 
     def _setup_audio_config(self):
         if self.mode == "subtitle":
@@ -139,6 +163,7 @@ class StellaScriptTranscription:
 
     def _reset_buffers(self):
         """Resets audio buffers."""
+        import numpy as np
         self.audio_buffer = np.array([], dtype=np.float32)
         self.full_audio_buffer_list = []
         if self.mode == "subtitle":
@@ -192,6 +217,8 @@ class StellaScriptTranscription:
                 del self.chunk_timestamps[chunk_id]
 
     def _process_transcription_cluster(self, chunk_id, audio_data):
+        assert self.speaker_manager is not None
+        assert self.transcriber is not None
         logger.debug(f"Processing segment {chunk_id} with live 'cluster' method.")
         try:
             embeddings = self.speaker_manager.get_embeddings([audio_data])
@@ -220,6 +247,7 @@ class StellaScriptTranscription:
         self._write_to_file(line, force_flush=True)
 
     def _process_transcription_pyannote(self, chunk_id, audio_data):
+        assert self.diarizer is not None
         pyannote_segments = self.diarizer.diarize_pyannote(audio_data)
         logger.debug(f"Diarization found {len(pyannote_segments)} segments.")
         
@@ -241,6 +269,9 @@ class StellaScriptTranscription:
         """
         if not segments_list:
             return []
+        
+        import numpy as np
+        from pyannote.core import Segment
 
         # Group consecutive segments from the same speaker.
         merged_groups = []
@@ -290,6 +321,7 @@ class StellaScriptTranscription:
         return final_segments
 
     def _transcribe_and_display(self, segment_info, total_segments=0, current_segment_num=0):
+        assert self.transcriber is not None
         turn = segment_info["turn"]
         speaker_label = segment_info["speaker_label"]
         speaker_audio_segment = segment_info["audio_segment"]
@@ -372,6 +404,7 @@ class StellaScriptTranscription:
 
     def _save_enhanced_audio(self, original_path, audio_data, enhancement_method):
         """Saves the enhanced audio to a new file."""
+        import numpy as np
         try:
             base, ext = os.path.splitext(original_path)
             new_path = f"{base}_cleaned_{enhancement_method}{ext}"
@@ -397,8 +430,16 @@ class StellaScriptTranscription:
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{milliseconds:03}"
 
     def transcribe_file(self, file_path):
+        self._initialize_modules()
+        assert self.enhancer is not None
+        assert self.diarizer is not None
+        assert self.speaker_manager is not None
         logger.info(f"Starting transcription for file: {file_path}")
         
+        import torchaudio
+        import torch
+        import numpy as np
+
         try:
             # --- Audio Loading and Enhancement ---
             logger.info("************ 1/4 Audio Loading and Enhancement ************")
@@ -494,8 +535,10 @@ class StellaScriptTranscription:
         if self.is_stopping:
             return (in_data, 1) # pyaudio.paComplete is 1
 
+        import numpy as np
         now = datetime.now()
         chunk = np.frombuffer(in_data, dtype=np.float32)
+        assert self.enhancer is not None
         chunk = self.enhancer.apply(chunk, is_live=True)
         self.full_audio_buffer_list.append(chunk)
         if self.mode == "subtitle":
@@ -505,6 +548,8 @@ class StellaScriptTranscription:
         return (in_data, 0) # pyaudio.paContinue is 0
 
     def _process_subtitle_mode(self, chunk, now):
+        import numpy as np
+        assert self.diarizer is not None
         speech_prob = self.diarizer.apply_vad_to_chunk(chunk)
         if speech_prob > self.vad_speech_threshold:
             self.vad_silence_counter = 0
@@ -524,6 +569,7 @@ class StellaScriptTranscription:
 
     def _process_transcription_mode(self, chunk, now):
         """Process audio in transcription mode with larger buffers."""
+        import numpy as np
         self.audio_buffer = np.concatenate([self.audio_buffer, chunk])
         
         # Store the timestamp when the buffer starts filling
@@ -549,6 +595,9 @@ class StellaScriptTranscription:
 
     def start_recording(self):
         """Initializes and starts the audio recording and processing threads."""
+        self._initialize_modules()
+        assert self.diarizer is not None
+        assert self.audio_capture is not None
         if self.filename is None:
             self.filename = self._generate_filename()
             self._init_output_file()
@@ -569,6 +618,7 @@ class StellaScriptTranscription:
         if not self.is_running or self.is_stopping:
             return
         
+        import numpy as np
         logger.info("\nStopping recording...")
         self.is_stopping = True # Signal to stop processing new audio chunks
         
@@ -631,6 +681,7 @@ class StellaScriptTranscription:
 
     def save_audio(self):
         if not self.full_audio_buffer_list: return
+        import numpy as np
         full_audio = np.concatenate(self.full_audio_buffer_list)
         filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
         scaled = np.int16(full_audio / np.max(np.abs(full_audio)) * 32767.0)

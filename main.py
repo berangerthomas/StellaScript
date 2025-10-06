@@ -14,6 +14,11 @@ def main():
     """Main function to run the transcription application."""
     args = parse_args()
 
+    # --- Pre-validation before loading any models ---
+    if args.file and not os.path.exists(args.file):
+        logger.error(f"The specified file does not exist: {args.file}")
+        sys.exit(1)
+
     transcriber = None
     try:
         logger.info("Initializing StellaScript transcription")
@@ -33,9 +38,6 @@ def main():
         )
 
         if args.file:
-            if not os.path.exists(args.file):
-                logger.error(f"The specified file does not exist: {args.file}")
-                sys.exit(1)
             logger.info(f"Starting file transcription: {args.file}")
             transcriber.transcribe_file(args.file)
         else:

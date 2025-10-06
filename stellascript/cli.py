@@ -111,10 +111,21 @@ def validate_args(args, parser):
         )
 
     # The --threshold argument is only used for 'cluster' diarization.
-    # Warn the user if they provide it while using pyannote.
     if args.diarization == "pyannote" and args.threshold != parser.get_default("threshold"):
-        warnings.warn(
-            "Warning: --threshold is ignored when using '--diarization pyannote'."
+        parser.error("--threshold cannot be used with --diarization pyannote.")
+
+    # --min-speakers is only for pyannote
+    if args.diarization == "cluster" and args.min_speakers is not None:
+        parser.error("--min-speakers cannot be used with --diarization cluster.")
+
+    # In cluster mode, threshold and max_speakers are mutually exclusive
+    if (
+        args.diarization == "cluster"
+        and args.max_speakers is not None
+        and args.threshold != parser.get_default("threshold")
+    ):
+        parser.error(
+            "--threshold and --max-speakers cannot be used together with --diarization cluster."
         )
     
     if args.auto_engine_threshold != parser.get_default("auto_engine_threshold") and args.transcription_engine != "auto":
