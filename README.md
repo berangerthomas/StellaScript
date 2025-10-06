@@ -13,7 +13,7 @@ The choice of transcription engine is critical for balancing speed and accuracy.
 -   **`faster-whisper`**: A reimplementation of Whisper using CTranslate2, offering significant performance gains (3-5x faster on GPU) through quantization and optimized computation. It excels on long, clear audio segments.
 -   **`transformers`**: The official Hugging Face implementation. While slower, it exhibits greater stability on short, ambiguous, or noisy audio segments, reducing the risk of repetitive hallucinations.
 
-The default **`auto`** engine leverages the strengths of both. It processes audio segments shorter than a configurable duration (`--auto-engine-threshold`) with `transformers` and longer segments with `faster-whisper`. This hybrid approach provides a robust balance suitable for most use cases.
+The default **`auto`** engine (`--transcription-engine auto`) leverages the strengths of both. It processes audio segments shorter than a configurable duration (`--auto-engine-threshold`) with `transformers` and longer segments with `faster-whisper`. This hybrid approach provides a robust balance suitable for most use cases.
 
 ### 2. Hallucination Mitigation via Silence Padding
 
@@ -27,24 +27,32 @@ While not described in a formal publication, this technique is a practical metho
 
 ### 3. Speaker Diarization Methodologies
 
-The tool offers two distinct methods for speaker identification:
+The tool offers two distinct methods for speaker identification, selectable via the `--diarization` argument:
 
--   **`pyannote` (Default)**: This method uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is a comprehensive model that performs speech segmentation, embedding extraction, and clustering in a single step, offering high accuracy, especially in conversations with overlapping speech.
+-   **`pyannote` (Default)**: This method (`--diarization pyannote`) uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is a comprehensive model that performs speech segmentation, embedding extraction, and clustering in a single step, offering high accuracy, especially in conversations with overlapping speech.
 
--   **`cluster`**: This is a multi-step, manual pipeline:
+-   **`cluster`**: This method (`--diarization cluster`) is a multi-step, manual pipeline:
     1.  **Voice Activity Detection (VAD)**: The audio is first segmented into speech and non-speech regions using the `Silero-VAD` model [[4]](#4).
     2.  **Speaker Embedding**: For each speech segment, a fixed-dimensional vector representation (an embedding, or "voiceprint") is extracted using the `speechbrain/spkrec-ecapa-voxceleb` model, which is based on the ECAPA-TDNN architecture [[3]](#3).
     3.  **Clustering**: All embeddings are grouped using agglomerative clustering based on cosine similarity to identify the unique speakers.
 
 ### 4. Intelligent Chunking for File Processing
 
-When transcribing a file, simply splitting the audio into fixed-size chunks can cut sentences in half and destroy conversational context. This script employs a more intelligent approach:
+When transcribing a file (using the `--file` argument), simply splitting the audio into fixed-size chunks can cut sentences in half and destroy conversational context. This script employs a more intelligent approach:
 
 1.  The entire file is first diarized to identify all speaker turns.
 2.  These turns are then grouped into optimal chunks of 60-120 seconds.
 3.  Crucially, the cuts between chunks are made at natural pauses (silences) between speaker segments.
 
 This method ensures that each chunk sent for transcription contains coherent conversational context, improving the accuracy and readability of the output.
+
+### 5. Output Formatting: Transcription vs. Subtitle
+
+The final output format is controlled by the `--mode` argument, which dictates how text segments are presented.
+
+-   **`transcription` Mode**: This mode is designed for maximum readability. It performs a post-processing step that intelligently concatenates consecutive utterances from the same speaker. This transforms a fragmented stream of segments into coherent, paragraph-like blocks of text for each speaker, making the final document easy to read, analyze, and quote.
+
+-   **`subtitle` Mode**: This mode is optimized for real-time or time-sensitive applications. It outputs each transcribed segment immediately with its corresponding timestamp, without concatenation. This ensures that the output stays as close as possible to the live audio stream, which is critical for subtitling or immediate monitoring, even if it results in more frequent timestamps.
 
 ## Installation
 
