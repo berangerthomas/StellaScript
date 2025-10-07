@@ -1,5 +1,5 @@
 <div align="center">
-    <img src="docs/pictures/logo.jpg" alt="StellaScript Logo" width="200"/>
+    <img src="docs/pictures/logo.jpg" alt="StellaScript Logo"/>
 </div>
 
 <h1 align="center">StellaScript: A Python Tool for Transcription and Speaker Diarization</h1>
@@ -10,8 +10,6 @@
     <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white" alt="PyTorch"></a>
     <a href="https://huggingface.co/"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow" alt="Hugging Face"></a>
 </div>
-
-## StellaScript: A Python Tool for Transcription and Speaker Diarization
 
 StellaScript is a Python application for generating speaker-aware transcriptions from live or pre-recorded audio. It integrates several machine learning models for its core functions: speech-to-text via OpenAI's Whisper model (using `faster-whisper` or Hugging Face `transformers` implementations), speaker diarization using `pyannote.audio`, and speaker embedding generation with `SpeechBrain`.
 
