@@ -2,10 +2,13 @@
     <img src="docs/pictures/logo.jpg" alt="StellaScript Logo"/>
 </div>
 <div align="center">
-    <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/packaged%20with-uv-9932CC.svg" alt="uv"></a>
+    <a href="https://github.com/berangerthomas/stellascript/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://www.python.org/downloads/release/python-3110/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+    <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/packaged%20with-uv-9932CC.svg" alt="uv"></a>
+    <br/>
     <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white" alt="PyTorch"></a>
-    <a href="https://huggingface.co/"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow" alt="Hugging Face"></a>
+    <a href="https://huggingface.co/transformers"><img src="https://img.shields.io/badge/%F0%9F%A4%97-Transformers-yellow" alt="Transformers"></a>
+    <a href="https://github.com/berangerthomas/stellascript/stargazers"><img src="https://img.shields.io/github/stars/berangerthomas/stellascript?style=social" alt="GitHub stars"></a>
 </div>
 
 ## A Python Tool for Transcription and Speaker Diarization
