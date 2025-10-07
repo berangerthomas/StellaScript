@@ -6,6 +6,14 @@ StellaScript is a Python application for generating speaker-aware transcriptions
 
 This tool employs several techniques to ensure accurate and efficient transcription and diarization.
 
+### Visual Overview of the Processing Pipeline
+
+The diagram below illustrates the complete processing pipeline, from audio input to the final formatted output. It shows how the different modules—such as audio enhancement, voice activity detection, diarization, and transcription—interact.
+
+![StellaScript Processing Pipeline](docs/pictures/yed_pipeline_graph_horizontal.png)
+
+*Figure 1: A visual representation of the StellaScript processing pipeline, detailing the flow of data and the sequence of operations.*
+
 ### 1. Hybrid Transcription Strategy
 
 The choice of transcription engine is critical for balancing speed and accuracy.
@@ -14,6 +22,12 @@ The choice of transcription engine is critical for balancing speed and accuracy.
 -   **`transformers`**: The official Hugging Face implementation. While slower, it exhibits greater stability on short, ambiguous, or noisy audio segments, reducing the risk of repetitive hallucinations.
 
 The default **`auto`** engine (`--transcription-engine auto`) leverages the strengths of both. It processes audio segments shorter than a configurable duration (`--auto-engine-threshold`) with `transformers` and longer segments with `faster-whisper`. This hybrid approach provides a robust balance suitable for most use cases.
+
+The choice of the Whisper model is a trade-off between transcription accuracy (measured by Word Error Rate, or WER) and processing speed. The graph below shows the performance of different Whisper models across four languages, which can help in selecting the most appropriate model for a given task.
+
+![Whisper Model Performance](docs/pictures/choosing_whisper_model_wer_vs_time.png)
+
+*Figure 2: Word Error Rate (WER) versus processing time for various Whisper models in French, English, Spanish, and German.*
 
 ### 2. Hallucination Mitigation via Silence Padding
 
