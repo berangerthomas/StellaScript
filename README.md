@@ -10,15 +10,15 @@
     <a href="https://huggingface.co/transformers"><img src="https://img.shields.io/badge/%F0%9F%A4%97-Transformers-yellow" alt="Transformers"></a>
 </div>
 
-## A Python Tool for Transcription and Speaker Diarization
+## A Python tool for transcription and speaker diarization
 
 StellaScript is a Python application for generating speaker-aware transcriptions from live or pre-recorded audio. It integrates several machine learning models for its core functions: speech-to-text via OpenAI's Whisper model (using `faster-whisper` or Hugging Face `transformers` implementations), speaker diarization using `pyannote.audio`, and speaker embedding generation with `SpeechBrain`.
 
-## Core Concepts and Methodology
+## Core concepts and methodology
 
 This tool employs several techniques to ensure accurate and efficient transcription and diarization.
 
-### Visual Overview of the Processing Pipeline
+### Visual overview of the processing pipeline
 
 The diagram below illustrates the complete processing pipeline, from audio input to the final formatted output. It shows how the different modules—such as audio enhancement, voice activity detection, diarization, and transcription—interact.
 
@@ -26,7 +26,7 @@ The diagram below illustrates the complete processing pipeline, from audio input
 
 *Figure 1: A visual representation of the StellaScript processing pipeline, detailing the flow of data and the sequence of operations.*
 
-### 1. Hybrid Transcription Strategy
+### 1. Hybrid transcription strategy
 
 The choice of transcription engine is critical for balancing speed and accuracy.
 
@@ -41,7 +41,7 @@ The choice of the Whisper model is a trade-off between transcription accuracy (m
 
 *Figure 2: Word Error Rate (WER) versus processing time for various Whisper models in French, English, Spanish, and German.*
 
-### 2. Hallucination Mitigation via Silence Padding
+### 2. Hallucination mitigation via silence padding
 
 Segment-based transcription can cause the model to generate repetitive or nonsensical text (hallucinations), especially at the start or end of a chunk. This script implements a specific technique to mitigate this:
 
@@ -51,7 +51,7 @@ Segment-based transcription can cause the model to generate repetitive or nonsen
 
 While not described in a formal publication, this technique is a practical method for improving the robustness of segment-based transcription.
 
-### 3. Speaker Diarization Methodologies
+### 3. Speaker diarization methodologies
 
 The tool offers two distinct methods for speaker identification, selectable via the `--diarization` argument:
 
@@ -62,7 +62,7 @@ The tool offers two distinct methods for speaker identification, selectable via 
     2.  **Speaker Embedding**: For each speech segment, a fixed-dimensional vector representation (an embedding, or "voiceprint") is extracted using the `speechbrain/spkrec-ecapa-voxceleb` model, which is based on the ECAPA-TDNN architecture [[3]](#3).
     3.  **Clustering**: All embeddings are grouped using agglomerative clustering based on cosine similarity to identify the unique speakers.
 
-### 4. Intelligent Chunking for File Processing
+### 4. Intelligent chunking for file processing
 
 When transcribing a file (using the `--file` argument), simply splitting the audio into fixed-size chunks can cut sentences in half and destroy conversational context. This script employs a more intelligent approach:
 
@@ -72,7 +72,7 @@ When transcribing a file (using the `--file` argument), simply splitting the aud
 
 This method ensures that each chunk sent for transcription contains coherent conversational context, improving the accuracy and readability of the output.
 
-### 5. Output Formatting: Transcription vs. Subtitle
+### 5. Output formatting: transcription vs. subtitle
 
 The final output format is controlled by the `--mode` argument, which dictates how text segments are presented.
 
@@ -91,27 +91,27 @@ The final output format is controlled by the `--mode` argument, which dictates h
 
 ### Setup
 
-1.  **Clone Repository**: `git clone https://github.com/berangerthomas/stellascript.git && cd stellascript`
-2.  **Install Dependencies**:
+1.  **Clone repository**: `git clone https://github.com/berangerthomas/stellascript.git && cd stellascript`
+2.  **Install dependencies**:
     ```bash
     uv venv
     uv sync
     ```
-3.  **Activate Environment**:
+3.  **Activate environment**:
     -   Windows: `.venv\Scripts\activate`
     -   Linux/macOS: `source .venv/bin/activate`
-4.  **Install PyTorch for GPU (Optional)**:
+4.  **Install PyTorch for GPU (optional)**:
     ```bash
-    # Example for CUDA 12.1
-    uv pip install torch --index-url https://download.pytorch.org/whl/cu121
+    # Example for CUDA 12.6
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
     ```
-5.  **Configure Hugging Face**: Create a `.env` file with your token:
+5.  **Configure Hugging Face (optional)**: Create a `.env` file with your token:
     ```
     HUGGING_FACE_TOKEN="hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
     ```
     You must also accept the user agreements for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0` on the Hugging Face Hub.
 
-## Command-Line Reference
+## Command-line reference
 
 | Argument | Default | Description |
 |---|---|---|
@@ -127,17 +127,17 @@ The final output format is controlled by the `--mode` argument, which dictates h
 | `--auto-engine-threshold <float>` | `15.0` | **(Auto mode only)** Time in seconds to switch from `transformers` to `faster-whisper`. |
 | `--enhancement <method>` | `none` | Audio enhancement. Choices: `none`, `deepfilternet` [[6]](#6), `demucs` [[5]](#5). |
 
-## Usage Scenarios
+## Usage scenarios
 
-### Scenario 1: Live Subtitling of a Presentation
+### Scenario 1: live subtitling of a presentation
 
 **Goal**: Low-latency, real-time captions for a single speaker.
-**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.6`) prevents voice modulation from creating a new speaker identity. `deepfilternet` provides lightweight noise reduction.
+**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.4`) prevents voice modulation from creating a new speaker identity. `deepfilternet` provides lightweight noise reduction.
 ```bash
 python main.py --mode subtitle --language en --diarization cluster --threshold 0.6 --enhancement deepfilternet
 ```
 
-### Scenario 2: Generating a Transcript of a Recorded Interview
+### Scenario 2: generating a transcript of a recorded interview
 
 **Goal**: High-accuracy transcript of a 2-person conversation.
 **Rationale**: `pyannote` is highly accurate for diarization. Specifying `--min-speakers 2 --max-speakers 2` constrains the model for optimal results. `transcription` mode creates a clean, readable document.
@@ -145,7 +145,7 @@ python main.py --mode subtitle --language en --diarization cluster --threshold 0
 python main.py --mode transcription --file "interview.wav" --min-speakers 2 --max-speakers 2
 ```
 
-### Scenario 3: Transcribing a Noisy Field Recording
+### Scenario 3: transcribing a noisy field recording
 
 **Goal**: Extract intelligible speech from a noisy environment.
 **Rationale**: `demucs` is a powerful source separation model that can isolate vocals. The resulting audio may be fragmented, so the `transformers` engine is used for its stability on short segments.
@@ -153,7 +153,7 @@ python main.py --mode transcription --file "interview.wav" --min-speakers 2 --ma
 python main.py --mode transcription --file "field_recording.wav" --enhancement demucs --transcription-engine transformers
 ```
 
-### Scenario 4: Processing a Multi-Speaker Focus Group Recording
+### Scenario 4: processing a multi-speaker focus group recording
 
 **Goal**: Transcribe a complex conversation with an unknown number of speakers.
 **Rationale**: `pyannote` excels in complex, multi-speaker scenarios. The default `auto` engine will balance speed and accuracy across varying segment lengths.
@@ -161,7 +161,7 @@ python main.py --mode transcription --file "field_recording.wav" --enhancement d
 python main.py --mode transcription --file "focus_group.wav" --diarization pyannote
 ```
 
-## Output File Naming
+## Output file naming
 
 All transcriptions are saved to a `.txt` file with a name generated from the configuration settings.
 
@@ -179,7 +179,7 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
 
 ## Troubleshooting
 
-### Repetitive or Inaccurate Text
+### Repetitive or inaccurate text
 
 -   **Symptom**: The transcription repeats a phrase or contains nonsensical text.
 -   **Cause**: This can occur when short or silent segments are passed to the transcription model.
@@ -187,14 +187,14 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
     1.  Lower `--auto-engine-threshold` (e.g., to `10.0`) to use the `transformers` engine on more segments.
     2.  Force the `transformers` engine for the entire run with `--transcription-engine transformers`.
 
-### Incorrect Speaker Labels
+### Incorrect speaker labels
 
 -   **Symptom**: One person is labeled as multiple speakers, or multiple people are merged.
 -   **Solution**:
     1.  If using `--diarization cluster`, adjust the `--threshold`. A lower value merges more easily; a higher value separates more easily.
     2.  If using `--diarization pyannote` on a file, provide speaker hints with `--min-speakers` and `--max-speakers`.
 
-### Slow Performance
+### Slow performance
 
 -   **Symptom**: Transcription speed is significantly slower than real-time.
 -   **Solution**:
