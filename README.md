@@ -12,15 +12,13 @@
 
 ## A Python tool for transcription and speaker diarization
 
-StellaScript is a Python application for generating speaker-aware transcriptions from live or pre-recorded audio. It integrates several machine learning models for its core functions: speech-to-text via OpenAI's Whisper model (using `faster-whisper` or Hugging Face `transformers` implementations), speaker diarization using `pyannote.audio`, and speaker embedding generation with `SpeechBrain`.
+StellaScript is a Python application for generating speaker-aware transcriptions from live or pre-recorded audio. It integrates several machine learning models for its core functions: speech-to-text via OpenAI's Whisper model (using `faster-whisper` and Hugging Face `transformers` implementations), speaker diarization using `pyannote.audio`, and speaker embedding generation with `SpeechBrain`.
 
 ## Core concepts and methodology
 
-This tool employs several techniques to ensure accurate and efficient transcription and diarization.
-
 ### Visual overview of the processing pipeline
 
-The diagram below illustrates the complete processing pipeline, from audio input to the final formatted output. It shows how the different modules—such as audio enhancement, voice activity detection, diarization, and transcription—interact.
+The diagram below illustrates the complete processing pipeline, from audio input to the final formatted output. It shows how the different modules - such as audio enhancement, voice activity detection, diarization, and transcription - interact.
 
 ![StellaScript Processing Pipeline](docs/pictures/yed_pipeline_graph_horizontal.png)
 
@@ -30,8 +28,8 @@ The diagram below illustrates the complete processing pipeline, from audio input
 
 The choice of transcription engine is critical for balancing speed and accuracy.
 
--   **`faster-whisper`**: A reimplementation of Whisper using CTranslate2, offering significant performance gains (3-5x faster on GPU) through quantization and optimized computation. It excels on long, clear audio segments.
--   **`transformers`**: The official Hugging Face implementation. While slower, it exhibits greater stability on short, ambiguous, or noisy audio segments, reducing the risk of repetitive hallucinations.
+-   **`faster-whisper`**: a reimplementation of Whisper using CTranslate2, offering significant performance gains (3-5x faster on GPU) through quantization and optimized computation. It excels on long, clear audio segments.
+-   **`transformers`**: the official Hugging Face implementation. While slower, it exhibits greater stability on short, ambiguous, or noisy audio segments, reducing the risk of repetitive hallucinations.
 
 The default **`auto`** engine (`--transcription-engine auto`) leverages the strengths of both. It processes audio segments shorter than a configurable duration (`--auto-engine-threshold`) with `transformers` and longer segments with `faster-whisper`. This hybrid approach provides a robust balance suitable for most use cases.
 
@@ -41,34 +39,35 @@ The choice of the Whisper model is a trade-off between transcription accuracy (m
 
 *Figure 2: Word Error Rate (WER) versus processing time for various Whisper models in French, English, Spanish, and German.*
 
+Based on the performance data, here are some model selection recommendations for specific languages:
+
+-   **French**: `large-v3` is recommended for the highest accuracy.
+-   **English**: the `small` model offers a compelling trade-off, performing slightly better than `large-v3` while being nearly four times faster.
+-   **Spanish**: the `medium` model provides a good balance between accuracy and processing speed.
+-   **German**: `large-v3` is the best option for achieving the lowest error rate.
+
 ### 2. Hallucination mitigation via silence padding
 
-Segment-based transcription can cause the model to generate repetitive or nonsensical text (hallucinations), especially at the start or end of a chunk. This script implements a specific technique to mitigate this:
-
--   **Technique**: 1.5 seconds of digital silence is prepended and appended to each audio chunk before it is passed to the Whisper model.
--   **Mechanism**: This padding provides a clean, unambiguous acoustic context for the model's encoder. It effectively resets the model's attention state, preventing it from carrying over erroneous patterns from a previous chunk's boundary.
--   **Timestamp Integrity**: The timestamps for the final transcription are calculated based on the original, un-padded audio segment's position in the stream, ensuring that this internal processing step does not affect the final temporal accuracy.
-
-While not described in a formal publication, this technique is a practical method for improving the robustness of segment-based transcription.
+To mitigate the risk of model hallucinations—where repetitive or nonsensical text is generated—the script employs a silence padding technique. Before transcription, each audio chunk is wrapped with **1.5 seconds of digital silence** at both the beginning and end. Importantly, the final timestamps are adjusted to reflect the original audio, ensuring that this internal processing step *does not affect temporal accuracy*.
 
 ### 3. Speaker diarization methodologies
 
 The tool offers two distinct methods for speaker identification, selectable via the `--diarization` argument:
 
--   **`pyannote` (Default)**: This method (`--diarization pyannote`) uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is a comprehensive model that performs speech segmentation, embedding extraction, and clustering in a single step, offering high accuracy, especially in conversations with overlapping speech.
+-   **`pyannote` (Default)**: this method (`--diarization pyannote`) uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is a comprehensive model that performs speech segmentation, embedding extraction, and clustering in a single step, offering high accuracy, especially in conversations with overlapping speech.
 
--   **`cluster`**: This method (`--diarization cluster`) is a multi-step, manual pipeline:
-    1.  **Voice Activity Detection (VAD)**: The audio is first segmented into speech and non-speech regions using the `Silero-VAD` model [[4]](#4).
-    2.  **Speaker Embedding**: For each speech segment, a fixed-dimensional vector representation (an embedding, or "voiceprint") is extracted using the `speechbrain/spkrec-ecapa-voxceleb` model, which is based on the ECAPA-TDNN architecture [[3]](#3).
-    3.  **Clustering**: All embeddings are grouped using agglomerative clustering based on cosine similarity to identify the unique speakers.
+-   **`cluster`**: This method (`--diarization cluster`) is a multi-step pipeline:
+    1.  **Voice Activity Detection (VAD)**: the audio is first segmented into speech and non-speech regions using the `Silero-VAD` model [[4]](#4).
+    2.  **Speaker Embedding**: for each speech segment, a fixed-dimensional vector representation (an embedding, or "voiceprint") is extracted using the `speechbrain/spkrec-ecapa-voxceleb` model, which is based on the ECAPA-TDNN architecture [[3]](#3).
+    3.  **Clustering**: all embeddings are grouped using agglomerative clustering based on cosine similarity to identify the unique speakers.
 
 ### 4. Intelligent chunking for file processing
 
-When transcribing a file (using the `--file` argument), simply splitting the audio into fixed-size chunks can cut sentences in half and destroy conversational context. This script employs a more intelligent approach:
+When transcribing a file (using the `--file` argument), simply splitting the audio into fixed-size chunks can cut sentences in half and destroy conversational context. So, this script leverages a different approach:
 
 1.  The entire file is first diarized to identify all speaker turns.
-2.  These turns are then grouped into optimal chunks of 60-120 seconds.
-3.  Crucially, the cuts between chunks are made at natural pauses (silences) between speaker segments.
+2.  In `transcription` mode, these turns are then grouped into optimal chunks of 60-120 seconds.
+3.  In `subtitle` mode, the cuts between chunks are made at natural pauses (silences) between speaker segments.
 
 This method ensures that each chunk sent for transcription contains coherent conversational context, improving the accuracy and readability of the output.
 
@@ -76,9 +75,9 @@ This method ensures that each chunk sent for transcription contains coherent con
 
 The final output format is controlled by the `--mode` argument, which dictates how text segments are presented.
 
--   **`transcription` Mode**: This mode is designed for maximum readability. It performs a post-processing step that intelligently concatenates consecutive utterances from the same speaker. This transforms a fragmented stream of segments into coherent, paragraph-like blocks of text for each speaker, making the final document easy to read, analyze, and quote.
+-   **`transcription` Mode**: this mode is designed for maximum readability. It performs a post-processing step that intelligently concatenates consecutive utterances from the same speaker. This transforms a fragmented stream of segments into coherent, paragraph-like blocks of text for each speaker, making the final document easy to read, analyze, and quote.
 
--   **`subtitle` Mode**: This mode is optimized for real-time or time-sensitive applications. It outputs each transcribed segment immediately with its corresponding timestamp, without concatenation. This ensures that the output stays as close as possible to the live audio stream, which is critical for subtitling or immediate monitoring, even if it results in more frequent timestamps.
+-   **`subtitle` Mode**: this mode is optimized for real-time or time-sensitive applications. It outputs each transcribed segment immediately with its corresponding timestamp, without concatenation. This ensures that the output stays as close as possible to the live audio stream, which is critical for subtitling or immediate monitoring, even if it results in more frequent timestamps.
 
 ## Installation
 
@@ -109,7 +108,7 @@ The final output format is controlled by the `--mode` argument, which dictates h
     ```
     HUGGING_FACE_TOKEN="hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
     ```
-    You must also accept the user agreements for `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0` on the Hugging Face Hub.
+    You must also accept the user agreements for `pyannote/speaker-diarization-3.1` on the Hugging Face Hub.
 
 ## Command-line reference
 
@@ -131,23 +130,23 @@ The final output format is controlled by the `--mode` argument, which dictates h
 
 ### Scenario 1: live subtitling of a presentation
 
-**Goal**: Low-latency, real-time captions for a single speaker.
-**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.4`) prevents voice modulation from creating a new speaker identity. `deepfilternet` provides lightweight noise reduction.
+**Goal**: low-latency, real-time captions for a single speaker.
+**Rationale**: `cluster` is faster than `pyannote`. A lower threshold (`0.4`) prevents voice modulation from creating a new speaker identity. The `small` model is selected for its strong balance of speed and accuracy in English.
 ```bash
-python main.py --mode subtitle --language en --diarization cluster --threshold 0.6 --enhancement deepfilternet
+python main.py --mode subtitle --language en --diarization cluster --threshold 0.4 --model small
 ```
 
 ### Scenario 2: generating a transcript of a recorded interview
 
-**Goal**: High-accuracy transcript of a 2-person conversation.
-**Rationale**: `pyannote` is highly accurate for diarization. Specifying `--min-speakers 2 --max-speakers 2` constrains the model for optimal results. `transcription` mode creates a clean, readable document.
+**Goal**: high-accuracy transcript of a 2-person conversation.
+**Rationale**: `pyannote` is highly accurate for diarization. Specifying `--min-speakers 2 --max-speakers 2` constrains the model for optimal results. `transcription` mode creates a clean, readable document. `deepfilternet` provides lightweight noise reduction.
 ```bash
-python main.py --mode transcription --file "interview.wav" --min-speakers 2 --max-speakers 2
+python main.py --mode transcription --file "interview.wav" --min-speakers 2 --max-speakers 2 --enhancement deepfilternet
 ```
 
 ### Scenario 3: transcribing a noisy field recording
 
-**Goal**: Extract intelligible speech from a noisy environment.
+**Goal**: extract intelligible speech from a noisy environment.
 **Rationale**: `demucs` is a powerful source separation model that can isolate vocals. The resulting audio may be fragmented, so the `transformers` engine is used for its stability on short segments.
 ```bash
 python main.py --mode transcription --file "field_recording.wav" --enhancement demucs --transcription-engine transformers
@@ -155,7 +154,7 @@ python main.py --mode transcription --file "field_recording.wav" --enhancement d
 
 ### Scenario 4: processing a multi-speaker focus group recording
 
-**Goal**: Transcribe a complex conversation with an unknown number of speakers.
+**Goal**: transcribe a complex conversation with an unknown number of speakers.
 **Rationale**: `pyannote` excels in complex, multi-speaker scenarios. The default `auto` engine will balance speed and accuracy across varying segment lengths.
 ```bash
 python main.py --mode transcription --file "focus_group.wav" --diarization pyannote
@@ -167,12 +166,12 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
 
 -   **Format**: `{base_name}_{mode}_{model}_{diarization}_{details}_{timestamp}.txt`
 -   **Components**:
-    -   `base_name`: The original filename, or `live` for microphone recordings.
+    -   `base_name`: the original filename, or `live` for microphone recordings.
     -   `mode`: `subtitle` or `transcription`.
-    -   `model`: The Whisper model used (e.g., `large-v3`).
+    -   `model`: the Whisper model used (e.g., `large-v3`).
     -   `diarization`: `pyannote` or `cluster`.
     -   `details`: `threshX.XX` for `cluster` mode, or `N-speakers` for file-based `pyannote` mode.
-    -   `timestamp`: A `YYYYMMDD_HHMMSS` string added to live recordings.
+    -   `timestamp`: a `YYYYMMDD_HHMMSS` string added to live recordings.
 -   **Examples**:
     -   `interview_transcription_large-v3_pyannote_2-speakers.txt`
     -   `live_subtitle_small_cluster_thresh0.60_20251002_213000.txt`
@@ -181,22 +180,22 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
 
 ### Repetitive or inaccurate text
 
--   **Symptom**: The transcription repeats a phrase or contains nonsensical text.
--   **Cause**: This can occur when short or silent segments are passed to the transcription model.
+-   **Symptom**: the transcription repeats a phrase or contains nonsensical text.
+-   **Cause**: this can occur when short or silent segments are passed to the transcription model.
 -   **Solution**:
     1.  Lower `--auto-engine-threshold` (e.g., to `10.0`) to use the `transformers` engine on more segments.
     2.  Force the `transformers` engine for the entire run with `--transcription-engine transformers`.
 
 ### Incorrect speaker labels
 
--   **Symptom**: One person is labeled as multiple speakers, or multiple people are merged.
+-   **Symptom**: one person is labeled as multiple speakers, or multiple people are merged.
 -   **Solution**:
     1.  If using `--diarization cluster`, adjust the `--threshold`. A lower value merges more easily; a higher value separates more easily.
     2.  If using `--diarization pyannote` on a file, provide speaker hints with `--min-speakers` and `--max-speakers`.
 
 ### Slow performance
 
--   **Symptom**: Transcription speed is significantly slower than real-time.
+-   **Symptom**: transcription speed is significantly slower than real-time.
 -   **Solution**:
     1.  Ensure the GPU-accelerated version of PyTorch is installed and being utilized.
     2.  Use a smaller model (e.g., `--model medium` or `--model small`).
