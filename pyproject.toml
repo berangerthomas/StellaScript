@@ -5,19 +5,18 @@ description = "Your stellar transcription companion"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pyannote-audio>=3.4.0",
+    "pyannote-audio",
     "pyaudio>=0.2.14",
     "python-dotenv>=1.1.1",
     "speechbrain>=1.0.3",
     "torch>=2.8.0",
     "torchaudio",
     "onnxruntime",
-    "ctranslate2>=4.0.0,<5.0.0",
-    "faster-whisper==0.10.0",
+    "ctranslate2",
     "demucs>=4.0.1",
     "soundfile>=0.13.1",
-    "transformers>=4.39.3",
     "deepfilternet",
     "torchvision>=0.23.0",
     "torchcodec>=0.7.0",
+    "whisperx>=3.3.1",
 ]

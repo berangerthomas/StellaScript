@@ -23,13 +23,11 @@ class StellaScriptTranscription:
         model_id="large-v3",
         language="fr",
         similarity_threshold=0.7,
-        mode="transcription",
+        mode="block",
         min_speakers=None,
         max_speakers=None,
         diarization_method="pyannote",
         enhancement_method="none",
-        transcription_engine="auto",
-        auto_engine_threshold=15.0,
         save_enhanced_audio=False,
         save_recorded_audio=False,
     ):
@@ -43,8 +41,6 @@ class StellaScriptTranscription:
         self.diarization_method = diarization_method
         self.similarity_threshold = similarity_threshold
         self.enhancement_method = enhancement_method
-        self.transcription_engine = transcription_engine
-        self.auto_engine_threshold = auto_engine_threshold
         self.save_enhanced_audio = save_enhanced_audio
         self.save_recorded_audio = save_recorded_audio
 
@@ -109,10 +105,7 @@ class StellaScriptTranscription:
         self.transcriber = Transcriber(
             model_id=self.model_id,
             device=self.device,
-            engine=self.transcription_engine,
-            auto_engine_threshold=self.auto_engine_threshold,
-            language=self.language,
-            mode=self.mode
+            language=self.language
         )
         self.diarizer = Diarizer(
             device=self.device,
@@ -140,7 +133,7 @@ class StellaScriptTranscription:
         logger.info("All models loaded successfully.")
 
     def _setup_audio_config(self):
-        if self.mode == "subtitle":
+        if self.mode == "segment":
             self.max_buffer_duration = config.SUBTITLE_MAX_BUFFER_DURATION
             self.vad_speech_threshold = config.VAD_SPEECH_THRESHOLD
             self.vad_silence_duration_s = config.VAD_SILENCE_DURATION_S
@@ -167,7 +160,7 @@ class StellaScriptTranscription:
         import numpy as np
         self.audio_buffer = np.array([], dtype=np.float32)
         self.full_audio_buffer_list = []
-        if self.mode == "subtitle":
+        if self.mode == "segment":
             self.vad_speech_buffer = np.array([], dtype=np.float32)
             self.vad_is_speaking = False
             self.vad_silence_counter = 0
@@ -206,7 +199,7 @@ class StellaScriptTranscription:
     def _process_transcription(self, chunk_id, audio_data):
         try:
             is_live_mode = self.start_time is not None
-            if is_live_mode and self.mode == "subtitle" and self.diarization_method == "cluster":
+            if is_live_mode and self.mode == "segment" and self.diarization_method == "cluster":
                 self._process_transcription_cluster(chunk_id, audio_data)
             else:
                 self._process_transcription_pyannote(chunk_id, audio_data)
@@ -392,21 +385,20 @@ class StellaScriptTranscription:
         progress = f"({current_segment_num}/{total_segments})" if total_segments > 0 else ""
         logger.info(f"Transcribing segment {progress} for {speaker_label}...")
 
-        is_file_subtitle_mode = self.start_time is None and self.mode == "subtitle"
+        # Word timestamps are needed for 'word' mode and for 'segment' mode (to re-segment subtitles).
+        word_timestamps_enabled = self.mode in ["word", "segment"]
 
         transcription_result = self.transcriber.transcribe_segment(
             speaker_audio_segment,
             config.RATE,
             config.TRANSCRIPTION_PADDING_S,
-            word_timestamps=is_file_subtitle_mode
+            word_timestamps=word_timestamps_enabled
         )
 
         segments, full_text = [], ""
-        if is_file_subtitle_mode:
-            # In this mode, result is always a tuple: (segments, text)
+        if isinstance(transcription_result, tuple):
             segments, full_text = transcription_result
         else:
-            # In other modes, result is a simple string
             full_text = transcription_result
 
         if not isinstance(full_text, str) or not full_text.strip():
@@ -429,20 +421,22 @@ class StellaScriptTranscription:
         )
         logger.debug(log_message)
 
-        if is_file_subtitle_mode:
+        if self.mode == "word":
+            self._write_word_level_timestamps(segments, speaker_label, chunk_start_time + turn.start)
+        elif self.mode == "segment":
             self._segment_and_write_subtitles(segments, speaker_label, chunk_start_time + turn.start)
-        elif self.mode == "transcription":
+        elif self.mode == "block":
             timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
             if self.transcription_buffer["speaker"] == speaker_label:
                 self.transcription_buffer["text"] += " " + full_text
             else:
                 self._flush_transcription_buffer()
                 self.transcription_buffer.update({"speaker": speaker_label, "timestamp": timestamp, "text": full_text})
-        else: # Live subtitle mode
+        else: # Fallback for safety, should not be reached
             timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
             line = f"[{timestamp}][{speaker_label}] {full_text}"
-            print(line) # Print transcription to console
-            self.transcription_queue.put(line) # Also put to queue for external access
+            print(line)
+            self.transcription_queue.put(line)
             logger.debug(f"Live: {line.strip()}")
             self._write_to_file(line + "\n", force_flush=True)
 
@@ -458,7 +452,7 @@ class StellaScriptTranscription:
         if not all_words:
             logger.warning("Word timestamps not available for re-segmentation. Falling back to full segment.")
             if segments:
-                full_text = "".join(s.text for s in segments).strip()
+                full_text = " ".join(s.text for s in segments).strip()
                 if full_text:
                     timestamp = self._calculate_video_timestamp(chunk_start_time + segments[0].start)
                     line_to_write = f"[{timestamp}][{speaker_label}] {full_text}\n"
@@ -471,7 +465,7 @@ class StellaScriptTranscription:
         line_start_time = all_words[0].start
 
         for i, word in enumerate(all_words):
-            current_line += word.word
+            current_line += word.word + " "
             is_last_word = (i == len(all_words) - 1)
             next_word_start = all_words[i + 1].start if not is_last_word else float('inf')
             silence_duration = next_word_start - word.end
@@ -492,6 +486,17 @@ class StellaScriptTranscription:
                     line_start_time = next_word_start
         
         logger.info(f"Generated {line_count} subtitle lines from the original segment.")
+
+    def _write_word_level_timestamps(self, segments, speaker_label, chunk_start_time):
+        """Writes word-level timestamps to the output file."""
+        self._write_to_file(f"[{speaker_label}]\n", force_flush=True)
+        for segment in segments:
+            if hasattr(segment, 'words') and segment.words:
+                for word in segment.words:
+                    start_time = self._format_timedelta(timedelta(seconds=chunk_start_time + word.start))
+                    end_time = self._format_timedelta(timedelta(seconds=chunk_start_time + word.end))
+                    line = f"[{start_time} -> {end_time}] {word.word.strip()}\n"
+                    self._write_to_file(line, force_flush=True)
 
     def _flush_transcription_buffer(self):
         if self.transcription_buffer["speaker"] and self.transcription_buffer["text"]:
@@ -599,7 +604,20 @@ class StellaScriptTranscription:
             logger.info(f"************ 2/4 Diarization by [{self.diarization_method}] ************")
             initial_segments = []
             found_speakers = 0
-            if self.diarization_method == "pyannote":
+            
+            # Intelligent Diarization: Skip if only one speaker is expected.
+            if self.max_speakers == 1:
+                logger.info("max_speakers is set to 1, skipping diarization.")
+                from pyannote.core import Segment
+                # Treat the entire audio as a single segment from one speaker.
+                full_duration = len(enhanced_audio) / config.RATE
+                initial_segments = [{
+                    "turn": Segment(0, full_duration),
+                    "speaker_label": "SPEAKER_00",
+                    "audio_segment": enhanced_audio
+                }]
+                found_speakers = 1
+            elif self.diarization_method == "pyannote":
                 pyannote_segments = self.diarizer.diarize_pyannote(
                     enhanced_audio, self.min_speakers, self.max_speakers
                 )
@@ -628,12 +646,12 @@ class StellaScriptTranscription:
 
             # --- Merge Consecutive Segments ---
             logger.info("************ 3/4 Merging/Chunking Segments ************")
-            if self.mode == 'subtitle':
-                # For subtitle mode, use segments as they are from the diarizer.
+            if self.mode == 'segment':
+                # For segment (subtitle) mode, use segments as they are from the diarizer for lower latency.
                 merged_segments = initial_segments
-                logger.info("Subtitle mode: Using diarizer's original segmentation.")
+                logger.info("Segment mode: Using diarizer's original segmentation.")
             else:
-                # For transcription mode, perform chunking.
+                # For block and word modes, perform chunking for higher context.
                 merged_segments = self._chunk_for_transcription(initial_segments)
 
             # --- Transcription and Buffering ---
@@ -680,13 +698,13 @@ class StellaScriptTranscription:
         assert self.enhancer is not None
         chunk = self.enhancer.apply(chunk, is_live=True)
         self.full_audio_buffer_list.append(chunk)
-        if self.mode == "subtitle":
-            self._process_subtitle_mode(chunk, now)
+        if self.mode == "segment":
+            self._process_segment_mode(chunk, now)
         else:
-            self._process_transcription_mode(chunk, now)
+            self._process_long_buffer_mode(chunk, now)
         return (in_data, 0) # pyaudio.paContinue is 0
 
-    def _process_subtitle_mode(self, chunk, now):
+    def _process_segment_mode(self, chunk, now):
         import numpy as np
         assert self.diarizer is not None
         speech_prob = self.diarizer.apply_vad_to_chunk(chunk)
@@ -708,15 +726,15 @@ class StellaScriptTranscription:
         
         # Force processing if buffer is too long, even without silence
         if self.vad_is_speaking and (len(self.vad_speech_buffer) > self.max_buffer_samples):
-            logger.debug(f"Subtitle buffer is full ({len(self.vad_speech_buffer) / config.RATE:.2f}s). Processing chunk.")
+            logger.debug(f"Segment mode buffer is full ({len(self.vad_speech_buffer) / config.RATE:.2f}s). Processing chunk.")
             buffer_duration = len(self.vad_speech_buffer) / config.RATE
             ts_start = (now - timedelta(seconds=buffer_duration)).timestamp()
             self._add_audio_segment(self.chunk_counter, self.vad_speech_buffer, ts_start, now.timestamp())
             self.vad_speech_buffer = np.array([], dtype=np.float32)
             # We don't reset vad_is_speaking here, as speech continues.
 
-    def _process_transcription_mode(self, chunk, now):
-        """Process audio in transcription mode with larger buffers."""
+    def _process_long_buffer_mode(self, chunk, now):
+        """Process audio in block or word mode with larger buffers."""
         import numpy as np
         self.audio_buffer = np.concatenate([self.audio_buffer, chunk])
         
@@ -753,7 +771,7 @@ class StellaScriptTranscription:
         if self.filename is None:
             self.filename = self._generate_filename()
             self._init_output_file()
-        if self.mode == "subtitle": self.diarizer._ensure_vad_loaded()
+        if self.mode == "segment": self.diarizer._ensure_vad_loaded()
         self.is_running = True
         self.start_time = datetime.now()
         self._reset_buffers()
@@ -800,8 +818,8 @@ class StellaScriptTranscription:
             logger.info(f"Queued final audio buffer ({duration:.2f}s) for processing.")
             self.audio_buffer = np.array([], dtype=np.float32)
         
-        # Process the final VAD buffer for 'subtitle' mode
-        if self.mode == "subtitle" and self.vad_speech_buffer.size > 0:
+        # Process the final VAD buffer for 'segment' mode
+        if self.mode == "segment" and self.vad_speech_buffer.size > 0:
             if len(self.vad_speech_buffer) / config.RATE > self.vad_min_speech_duration_s:
                 now = datetime.now()
                 duration = len(self.vad_speech_buffer) / config.RATE
@@ -822,8 +840,8 @@ class StellaScriptTranscription:
             if self.transcribe_thread.is_alive():
                 logger.warning("Transcription thread timed out. Some segments may be lost.")
         
-        # Flush the final merged text in 'transcription' mode
-        if self.mode == "transcription":
+        # Flush the final merged text in 'block' mode
+        if self.mode == "block":
             self._flush_transcription_buffer()
         
         self._write_to_file("\n# Transcription stopped.\n", force_flush=True)

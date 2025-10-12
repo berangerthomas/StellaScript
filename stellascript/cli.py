@@ -41,9 +41,14 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["subtitle", "transcription"],
-        default="transcription",
-        help="Processing mode.",
+        choices=["block", "segment", "word"],
+        default="block",
+        help=(
+            "Controls the timestamp granularity and output format. "
+            "'block': For readable transcripts with timestamps for large text blocks. "
+            "'segment': For subtitles with timestamps for short speech segments. "
+            "'word': For detailed analysis with a timestamp for every single word."
+        ),
     )
     parser.add_argument(
         "--min-speakers",
@@ -72,19 +77,6 @@ def parse_args():
         help="Audio enhancement method.",
     )
     parser.add_argument(
-        "--transcription-engine",
-        type=str,
-        choices=["auto", "faster-whisper", "transformers"],
-        default="auto",
-        help="Transcription engine.",
-    )
-    parser.add_argument(
-        "--auto-engine-threshold",
-        type=float,
-        default=15.0,
-        help="Duration threshold for auto engine selection.",
-    )
-    parser.add_argument(
         "--save-enhanced-audio",
         action="store_true",
         help="Save the enhanced audio to a new file.",
@@ -105,9 +97,9 @@ def validate_args(args, parser):
     if (args.min_speakers is not None or args.max_speakers is not None) and not args.file:
         parser.error("--min-speakers and --max-speakers can only be used in file mode (--file).")
 
-    if not args.file and args.mode == "transcription" and args.diarization == "cluster":
+    if not args.file and args.mode == "block" and args.diarization == "cluster":
         parser.error(
-            "In live mode, '--diarization cluster' is only compatible with '--mode subtitle'."
+            "In live mode, '--diarization cluster' is only compatible with '--mode segment'."
         )
 
     # The --threshold argument is only used for 'cluster' diarization.
@@ -126,9 +118,4 @@ def validate_args(args, parser):
     ):
         parser.error(
             "--threshold and --max-speakers cannot be used together with --diarization cluster."
-        )
-    
-    if args.auto_engine_threshold != parser.get_default("auto_engine_threshold") and args.transcription_engine != "auto":
-        warnings.warn(
-            f"Warning: --auto-engine-threshold will be ignored because --transcription-engine is '{args.transcription_engine}'."
         )

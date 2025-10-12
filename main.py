@@ -31,8 +31,6 @@ def main():
             max_speakers=args.max_speakers,
             diarization_method=args.diarization,
             enhancement_method=args.enhancement,
-            transcription_engine=args.transcription_engine,
-            auto_engine_threshold=args.auto_engine_threshold,
             save_enhanced_audio=args.save_enhanced_audio,
             save_recorded_audio=args.save_recorded_audio,
         )
