@@ -112,6 +112,7 @@ class StellaScriptTranscription:
             engine=self.transcription_engine,
             auto_engine_threshold=self.auto_engine_threshold,
             language=self.language,
+            mode=self.mode
         )
         self.diarizer = Diarizer(
             device=self.device,
@@ -236,7 +237,14 @@ class StellaScriptTranscription:
         logger.debug(f"Identified segment {chunk_id} as {assigned_speaker}")
         if len(audio_data) < int(0.5 * config.RATE): return
 
-        transcription = self.transcriber.transcribe_segment(audio_data, config.RATE, config.TRANSCRIPTION_PADDING_S)
+        transcription_result = self.transcriber.transcribe_segment(audio_data, config.RATE, config.TRANSCRIPTION_PADDING_S)
+        
+        transcription = ""
+        if isinstance(transcription_result, tuple):
+            transcription = transcription_result[1]
+        else:
+            transcription = transcription_result
+
         if not transcription or transcription.isspace(): return
 
         chunk_start_time = self.chunk_timestamps.get(chunk_id, {}).get("start", 0)
@@ -384,10 +392,24 @@ class StellaScriptTranscription:
         progress = f"({current_segment_num}/{total_segments})" if total_segments > 0 else ""
         logger.info(f"Transcribing segment {progress} for {speaker_label}...")
 
-        transcription = self.transcriber.transcribe_segment(
-            speaker_audio_segment, config.RATE, config.TRANSCRIPTION_PADDING_S
+        is_file_subtitle_mode = self.start_time is None and self.mode == "subtitle"
+
+        transcription_result = self.transcriber.transcribe_segment(
+            speaker_audio_segment,
+            config.RATE,
+            config.TRANSCRIPTION_PADDING_S,
+            word_timestamps=is_file_subtitle_mode
         )
-        if not transcription or transcription.isspace():
+
+        segments, full_text = [], ""
+        if is_file_subtitle_mode:
+            # In this mode, result is always a tuple: (segments, text)
+            segments, full_text = transcription_result
+        else:
+            # In other modes, result is a simple string
+            full_text = transcription_result
+
+        if not isinstance(full_text, str) or not full_text.strip():
             logger.warning(f"Transcription for segment {progress} resulted in empty text.")
             return
 
@@ -403,22 +425,73 @@ class StellaScriptTranscription:
         
         log_message = (
             f"Transcribed a {duration:.2f}s segment with [{self.transcriber.model_id}], "
-            f"from {start_hms} to {end_hms}. Text: '{transcription[:80]}...'"
+            f"from {start_hms} to {end_hms}. Text: '{full_text[:80]}...'"
         )
         logger.debug(log_message)
 
-        timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
-
-        if self.mode == "transcription":
+        if is_file_subtitle_mode:
+            self._segment_and_write_subtitles(segments, speaker_label, chunk_start_time + turn.start)
+        elif self.mode == "transcription":
+            timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
             if self.transcription_buffer["speaker"] == speaker_label:
-                self.transcription_buffer["text"] += " " + transcription
+                self.transcription_buffer["text"] += " " + full_text
             else:
                 self._flush_transcription_buffer()
-                self.transcription_buffer.update({"speaker": speaker_label, "timestamp": timestamp, "text": transcription})
-        else:
-            line = f"[{timestamp}][{speaker_label}] {transcription}\n"
+                self.transcription_buffer.update({"speaker": speaker_label, "timestamp": timestamp, "text": full_text})
+        else: # Live subtitle mode
+            timestamp = self._calculate_video_timestamp(chunk_start_time + turn.start)
+            line = f"[{timestamp}][{speaker_label}] {full_text}"
+            print(line) # Print transcription to console
+            self.transcription_queue.put(line) # Also put to queue for external access
             logger.debug(f"Live: {line.strip()}")
-            self._write_to_file(line, force_flush=True)
+            self._write_to_file(line + "\n", force_flush=True)
+
+    def _segment_and_write_subtitles(self, segments, speaker_label, chunk_start_time):
+        """
+        Re-segments a transcription based on word timestamps and writes subtitle lines.
+        """
+        all_words = []
+        for segment in segments:
+            if hasattr(segment, 'words') and segment.words:
+                all_words.extend(segment.words)
+
+        if not all_words:
+            logger.warning("Word timestamps not available for re-segmentation. Falling back to full segment.")
+            if segments:
+                full_text = "".join(s.text for s in segments).strip()
+                if full_text:
+                    timestamp = self._calculate_video_timestamp(chunk_start_time + segments[0].start)
+                    line_to_write = f"[{timestamp}][{speaker_label}] {full_text}\n"
+                    self._write_to_file(line_to_write, force_flush=True)
+            return
+
+        logger.info(f"Re-segmenting transcription for {speaker_label} based on word timestamps...")
+        line_count = 0
+        current_line = ""
+        line_start_time = all_words[0].start
+
+        for i, word in enumerate(all_words):
+            current_line += word.word
+            is_last_word = (i == len(all_words) - 1)
+            next_word_start = all_words[i + 1].start if not is_last_word else float('inf')
+            silence_duration = next_word_start - word.end
+            line_duration = word.end - line_start_time
+            
+            if (silence_duration > config.SUBTITLE_MAX_SILENCE_S or
+                (len(current_line) > config.SUBTITLE_MAX_LENGTH and word.word.endswith((' ', '.', ',', '?'))) or
+                line_duration > config.SUBTITLE_MAX_DURATION_S or
+                is_last_word):
+
+                timestamp = self._calculate_video_timestamp(chunk_start_time + line_start_time)
+                line_to_write = f"[{timestamp}][{speaker_label}] {current_line.strip()}\n"
+                self._write_to_file(line_to_write, force_flush=True)
+                line_count += 1
+                
+                if not is_last_word:
+                    current_line = ""
+                    line_start_time = next_word_start
+        
+        logger.info(f"Generated {line_count} subtitle lines from the original segment.")
 
     def _flush_transcription_buffer(self):
         if self.transcription_buffer["speaker"] and self.transcription_buffer["text"]:
@@ -486,7 +559,11 @@ class StellaScriptTranscription:
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{milliseconds:03}"
 
     def transcribe_file(self, file_path):
-        self._initialize_modules()
+        try:
+            self._initialize_modules()
+        except RuntimeError as e:
+            logger.error(f"Failed to initialize modules: {e}")
+            return
         assert self.enhancer is not None
         assert self.diarizer is not None
         assert self.speaker_manager is not None
@@ -628,6 +705,15 @@ class StellaScriptTranscription:
                     self.vad_speech_buffer = np.array([], dtype=np.float32)
                     self.vad_is_speaking = False
                     self.vad_silence_counter = 0
+        
+        # Force processing if buffer is too long, even without silence
+        if self.vad_is_speaking and (len(self.vad_speech_buffer) > self.max_buffer_samples):
+            logger.debug(f"Subtitle buffer is full ({len(self.vad_speech_buffer) / config.RATE:.2f}s). Processing chunk.")
+            buffer_duration = len(self.vad_speech_buffer) / config.RATE
+            ts_start = (now - timedelta(seconds=buffer_duration)).timestamp()
+            self._add_audio_segment(self.chunk_counter, self.vad_speech_buffer, ts_start, now.timestamp())
+            self.vad_speech_buffer = np.array([], dtype=np.float32)
+            # We don't reset vad_is_speaking here, as speech continues.
 
     def _process_transcription_mode(self, chunk, now):
         """Process audio in transcription mode with larger buffers."""
@@ -657,7 +743,11 @@ class StellaScriptTranscription:
 
     def start_recording(self):
         """Initializes and starts the audio recording and processing threads."""
-        self._initialize_modules()
+        try:
+            self._initialize_modules()
+        except RuntimeError as e:
+            logger.error(f"Failed to initialize modules: {e}")
+            return
         assert self.diarizer is not None
         assert self.audio_capture is not None
         if self.filename is None:
