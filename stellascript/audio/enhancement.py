@@ -4,7 +4,6 @@ import warnings
 import numpy as np
 import torch
 import torchaudio
-from df.enhance import enhance, init_df
 from ..logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +23,8 @@ class AudioEnhancer:
             return audio_data
 
         if self.enhancement_method == "deepfilternet":
+            from df.enhance import enhance, init_df
+
             if self.df_model is None:
                 logger.info("Loading DeepFilterNet denoiser model")
                 try:
