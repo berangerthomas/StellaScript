@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install uv
-          uv pip install . sphinx sphinx_rtd_theme
+          uv pip install --system . sphinx sphinx_rtd_theme
 
       - name: Build Sphinx documentation
         run: |
