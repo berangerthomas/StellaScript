@@ -1,5 +1,13 @@
 # stellascript/orchestrator.py
 
+"""
+Main orchestrator for the Stellascript transcription pipeline.
+
+This module contains the `StellaScriptTranscription` class, which coordinates
+various components like audio capture, enhancement, diarization, and transcription
+to provide a seamless real-time and file-based transcription service.
+"""
+
 import os
 import queue
 import threading
@@ -8,67 +16,114 @@ import traceback
 import warnings
 import wave
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from .logging_config import get_logger
+
+if TYPE_CHECKING:
+    from .audio.capture import AudioCapture
+    from .audio.enhancement import AudioEnhancer
+    from .processing.diarizer import Diarizer
+    from .processing.transcriber import Transcriber
+    from .processing.speaker_manager import SpeakerManager
+
+import numpy as np
+import torch
+from pyannote.core import Segment
+
 from . import config
+from .logging_config import get_logger
 
+# Suppress Hugging Face Hub warnings
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_LOCAL_DIR_IS_SYMLINK_SUPPORTED"] = "0"
 
 logger = get_logger(__name__)
 
+
 class StellaScriptTranscription:
+    """
+    Orchestrates the entire transcription process.
+
+    This class manages the audio stream (from microphone or file),
+    applies audio enhancement, performs speaker diarization, and uses a
+    transcription model to convert speech to text. It handles different
+    transcription modes (block, segment, word) and coordinates the various
+    sub-modules.
+    """
+
     def __init__(
         self,
-        model_id="large-v3",
-        language="fr",
-        similarity_threshold=0.7,
-        mode="block",
-        min_speakers=None,
-        max_speakers=None,
-        diarization_method="pyannote",
-        enhancement_method="none",
-        save_enhanced_audio=False,
-        save_recorded_audio=False,
-    ):
+        model_id: str = "large-v3",
+        language: str = "fr",
+        similarity_threshold: float = 0.7,
+        mode: str = "block",
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+        diarization_method: str = "pyannote",
+        enhancement_method: str = "none",
+        save_enhanced_audio: bool = False,
+        save_recorded_audio: bool = False,
+    ) -> None:
+        """
+        Initializes the StellaScriptTranscription orchestrator.
+
+        Args:
+            model_id (str): The identifier of the Whisper model to use.
+            language (str): The language for transcription.
+            similarity_threshold (float): Threshold for speaker identification
+                                          in 'cluster' mode.
+            mode (str): The transcription mode ('block', 'segment', 'word').
+            min_speakers (Optional[int]): Minimum number of speakers for Pyannote.
+            max_speakers (Optional[int]): Maximum number of speakers.
+            diarization_method (str): The diarization method ('pyannote', 'cluster').
+            enhancement_method (str): The audio enhancement method.
+            save_enhanced_audio (bool): Whether to save the enhanced audio.
+            save_recorded_audio (bool): Whether to save the raw recorded audio.
+        """
         logger.info("StellaScriptTranscription orchestrator initialized (modules not loaded yet).")
         # Store configuration
-        self.model_id = model_id
-        self.language = language
-        self.mode = mode
-        self.min_speakers = min_speakers
-        self.max_speakers = max_speakers
-        self.diarization_method = diarization_method
-        self.similarity_threshold = similarity_threshold
-        self.enhancement_method = enhancement_method
-        self.save_enhanced_audio = save_enhanced_audio
-        self.save_recorded_audio = save_recorded_audio
+        self.model_id: str = model_id
+        self.language: str = language
+        self.mode: str = mode
+        self.min_speakers: Optional[int] = min_speakers
+        self.max_speakers: Optional[int] = max_speakers
+        self.diarization_method: str = diarization_method
+        self.similarity_threshold: float = similarity_threshold
+        self.enhancement_method: str = enhancement_method
+        self.save_enhanced_audio: bool = save_enhanced_audio
+        self.save_recorded_audio: bool = save_recorded_audio
 
         # Initialize modules to None for lazy loading
-        self.device = None
-        self.transcriber = None
-        self.diarizer = None
-        self.speaker_manager = None
-        self.enhancer = None
-        self.audio_capture = None
-        self.modules_initialized = False
+        self.device: Optional[torch.device] = None
+        self.transcriber: Optional['Transcriber'] = None
+        self.diarizer: Optional['Diarizer'] = None
+        self.speaker_manager: Optional['SpeakerManager'] = None
+        self.enhancer: Optional['AudioEnhancer'] = None
+        self.audio_capture: Optional['AudioCapture'] = None
+        self.modules_initialized: bool = False
 
         # Setup basic configurations
         self._setup_audio_config()
         self._setup_buffers_and_queues()
-        self.chunk_timestamps = {}
-        self.chunk_counter = 0
-        self.is_running = False
-        self.is_stopping = False
-        self.start_time = None
-        self.filename = None
-        self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
+        self.chunk_timestamps: Dict[int, Dict[str, float]] = {}
+        self.chunk_counter: int = 0
+        self.is_running: bool = False
+        self.is_stopping: bool = False
+        self.start_time: Optional[datetime] = None
+        self.filename: Optional[str] = None
+        self.transcription_buffer: Dict[str, Any] = {"speaker": None, "timestamp": None, "text": ""}
 
-    def _initialize_modules(self):
-        """Initializes all heavy modules on demand."""
+    def _initialize_modules(self) -> None:
+        """
+        Initializes all heavy modules on demand (lazy loading).
+
+        This method imports and instantiates the main processing components like
+        the transcriber, diarizer, and enhancer. This is done on the first
+        call to a processing function to speed up initial application startup.
+        """
         if self.modules_initialized:
             return
-        
+
         logger.info("First use detected, initializing all modules...")
 
         # --- Defer heavy imports to this method ---
@@ -132,71 +187,114 @@ class StellaScriptTranscription:
         self.modules_initialized = True
         logger.info("All models loaded successfully.")
 
-    def _setup_audio_config(self):
+    def _setup_audio_config(self) -> None:
+        """Sets up audio configuration based on the transcription mode."""
         if self.mode == "segment":
-            self.max_buffer_duration = config.SUBTITLE_MAX_BUFFER_DURATION
-            self.vad_speech_threshold = config.VAD_SPEECH_THRESHOLD
-            self.vad_silence_duration_s = config.VAD_SILENCE_DURATION_S
-            self.vad_min_speech_duration_s = config.VAD_MIN_SPEECH_DURATION_S
-            self.vad_silence_samples = int(self.vad_silence_duration_s * config.RATE)
+            self.max_buffer_duration: float = config.SUBTITLE_MAX_BUFFER_DURATION
+            self.vad_speech_threshold: float = config.VAD_SPEECH_THRESHOLD
+            self.vad_silence_duration_s: float = config.VAD_SILENCE_DURATION_S
+            self.vad_min_speech_duration_s: float = config.VAD_MIN_SPEECH_DURATION_S
+            self.vad_silence_samples: int = int(self.vad_silence_duration_s * config.RATE)
         else:
             self.max_buffer_duration = config.TRANSCRIPTION_MAX_BUFFER_DURATION
-        self.max_buffer_samples = int(self.max_buffer_duration * config.RATE)
+        self.max_buffer_samples: int = int(self.max_buffer_duration * config.RATE)
 
-    def _setup_buffers_and_queues(self):
+    def _setup_buffers_and_queues(self) -> None:
         """Initializes buffers, queues, and state variables."""
-        self.result_queue = queue.Queue()
-        self.transcription_queue = queue.Queue() # Add this line
+        self.result_queue: queue.Queue[Tuple[int, np.ndarray]] = queue.Queue()
+        self.transcription_queue: queue.Queue[str] = queue.Queue()
         self.is_running = False
         self.is_stopping = False
         self.chunk_counter = 0
         self.chunk_timestamps = {}
         self.start_time = None
-        self.buffer_start_time = None # For transcription mode
+        self.buffer_start_time: Optional[float] = None  # For transcription mode
         self._reset_buffers()
 
-    def _reset_buffers(self):
+    def _reset_buffers(self) -> None:
         """Resets audio buffers."""
-        import numpy as np
-        self.audio_buffer = np.array([], dtype=np.float32)
-        self.full_audio_buffer_list = []
+        self.audio_buffer: np.ndarray = np.array([], dtype=np.float32)
+        self.full_audio_buffer_list: List[np.ndarray] = []
         if self.mode == "segment":
-            self.vad_speech_buffer = np.array([], dtype=np.float32)
-            self.vad_is_speaking = False
-            self.vad_silence_counter = 0
+            self.vad_speech_buffer: np.ndarray = np.array([], dtype=np.float32)
+            self.vad_is_speaking: bool = False
+            self.vad_silence_counter: int = 0
 
-    def _init_output_file(self):
+    def _init_output_file(self) -> None:
+        """Initializes the output file with a header."""
         if self.filename:
             with open(self.filename, "w", encoding="utf-8") as f:
                 f.write(f"# Transcription started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
-    def get_transcription(self):
+    def get_transcription(self) -> Optional[str]:
+        """
+        Retrieves a completed transcription line from the queue.
+
+        Returns:
+            Optional[str]: A transcribed line of text, or None if the queue is empty.
+        """
         try:
             return self.transcription_queue.get_nowait()
         except queue.Empty:
             return None
 
-    def _add_audio_segment(self, chunk_id, audio_data, start_time, end_time):
+    def _add_audio_segment(self, chunk_id: int, audio_data: np.ndarray, start_time: float, end_time: float) -> int:
+        """
+        Adds a new audio segment to the processing queue.
+
+        Args:
+            chunk_id (int): The unique identifier for the chunk.
+            audio_data (np.ndarray): The audio data of the segment.
+            start_time (float): The start timestamp of the segment.
+            end_time (float): The end timestamp of the segment.
+
+        Returns:
+            int: The ID of the newly added chunk.
+        """
         self.chunk_timestamps[chunk_id] = {"start": start_time, "end": end_time}
         self.result_queue.put((chunk_id, audio_data))
         self.chunk_counter += 1
         return self.chunk_counter - 1
 
-    def _calculate_video_timestamp(self, elapsed_seconds):
-        if elapsed_seconds < 0: elapsed_seconds = 0
+    def _calculate_video_timestamp(self, elapsed_seconds: float) -> str:
+        """
+        Converts elapsed seconds into a HH:MM:SS timestamp format.
+
+        Args:
+            elapsed_seconds (float): The number of seconds elapsed.
+
+        Returns:
+            str: The formatted timestamp string.
+        """
+        if elapsed_seconds < 0:
+            elapsed_seconds = 0
         total_seconds = int(elapsed_seconds)
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-    def _write_to_file(self, line, force_flush=False):
+    def _write_to_file(self, line: str, force_flush: bool = False) -> None:
+        """
+        Writes a line of text to the output file.
+
+        Args:
+            line (str): The text to write.
+            force_flush (bool): If True, forces the file buffer to be written to disk.
+        """
         if self.filename:
             with open(self.filename, "a", encoding="utf-8") as f:
                 f.write(line)
                 if force_flush:
                     f.flush()
 
-    def _process_transcription(self, chunk_id, audio_data):
+    def _process_transcription(self, chunk_id: int, audio_data: np.ndarray) -> None:
+        """
+        Routes an audio chunk to the appropriate transcription method.
+
+        Args:
+            chunk_id (int): The ID of the audio chunk.
+            audio_data (np.ndarray): The audio data to process.
+        """
         try:
             is_live_mode = self.start_time is not None
             if is_live_mode and self.mode == "segment" and self.diarization_method == "cluster":
@@ -210,7 +308,14 @@ class StellaScriptTranscription:
             if chunk_id in self.chunk_timestamps:
                 del self.chunk_timestamps[chunk_id]
 
-    def _process_transcription_cluster(self, chunk_id, audio_data):
+    def _process_transcription_cluster(self, chunk_id: int, audio_data: np.ndarray) -> None:
+        """
+        Processes transcription using the 'cluster' diarization method for live audio.
+
+        Args:
+            chunk_id (int): The ID of the audio chunk.
+            audio_data (np.ndarray): The audio data to process.
+        """
         assert self.speaker_manager is not None
         assert self.transcriber is not None
         logger.debug(f"Processing segment {chunk_id} with live 'cluster' method.")
@@ -247,7 +352,14 @@ class StellaScriptTranscription:
         logger.info(f"Live: {line.strip()}")
         self._write_to_file(line, force_flush=True)
 
-    def _process_transcription_pyannote(self, chunk_id, audio_data):
+    def _process_transcription_pyannote(self, chunk_id: int, audio_data: np.ndarray) -> None:
+        """
+        Processes transcription using the 'pyannote' diarization method.
+
+        Args:
+            chunk_id (int): The ID of the audio chunk.
+            audio_data (np.ndarray): The audio data to process.
+        """
         assert self.diarizer is not None
         pyannote_segments = self.diarizer.diarize_pyannote(audio_data)
         logger.debug(f"Diarization found {len(pyannote_segments)} segments.")
@@ -264,15 +376,18 @@ class StellaScriptTranscription:
         for segment_info in merged_segments:
             self._transcribe_and_display(segment_info)
 
-    def _merge_consecutive_segments(self, segments_list):
+    def _merge_consecutive_segments(self, segments_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Merges consecutive speech segments from the same speaker.
+
+        Args:
+            segments_list (List[Dict[str, Any]]): A list of segment dictionaries.
+
+        Returns:
+            List[Dict[str, Any]]: A new list of merged segment dictionaries.
         """
         if not segments_list:
             return []
-        
-        import numpy as np
-        from pyannote.core import Segment
 
         # Group consecutive segments from the same speaker.
         merged_groups = []
@@ -321,10 +436,18 @@ class StellaScriptTranscription:
             logger.debug("No consecutive segments from the same speaker to merge.")
         return final_segments
 
-    def _chunk_for_transcription(self, segments_list):
+    def _chunk_for_transcription(self, segments_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Chunks diarized segments for transcription mode. It creates larger chunks
-        of a target duration and then merges same-speaker segments within those chunks.
+        Chunks diarized segments for transcription mode.
+
+        It creates larger chunks of a target duration and then merges
+        same-speaker segments within those chunks.
+
+        Args:
+            segments_list (List[Dict[str, Any]]): A list of segment dictionaries.
+
+        Returns:
+            List[Dict[str, Any]]: A new list of chunked and merged segments.
         """
         if not segments_list:
             return []
@@ -373,9 +496,17 @@ class StellaScriptTranscription:
         logger.info(f"Re-chunked into {len(all_merged_segments)} segments for transcription.")
         return all_merged_segments
 
-    def _transcribe_and_display(self, segment_info, total_segments=0, current_segment_num=0):
+    def _transcribe_and_display(self, segment_info: Dict[str, Any], total_segments: int = 0, current_segment_num: int = 0) -> None:
+        """
+        Transcribes a single audio segment and handles its display or storage.
+
+        Args:
+            segment_info (Dict[str, Any]): Information about the segment to transcribe.
+            total_segments (int): The total number of segments for progress tracking.
+            current_segment_num (int): The number of the current segment.
+        """
         assert self.transcriber is not None
-        turn = segment_info["turn"]
+        turn: Segment = segment_info["turn"]
         speaker_label = segment_info["speaker_label"]
         speaker_audio_segment = segment_info["audio_segment"]
 
@@ -440,11 +571,16 @@ class StellaScriptTranscription:
             logger.debug(f"Live: {line.strip()}")
             self._write_to_file(line + "\n", force_flush=True)
 
-    def _segment_and_write_subtitles(self, segments, speaker_label, chunk_start_time):
+    def _segment_and_write_subtitles(self, segments: List[Any], speaker_label: str, chunk_start_time: float) -> None:
         """
         Re-segments a transcription based on word timestamps and writes subtitle lines.
+
+        Args:
+            segments (List[Any]): A list of transcription segments with word timestamps.
+            speaker_label (str): The label of the speaker.
+            chunk_start_time (float): The start time of the parent audio chunk.
         """
-        all_words = []
+        all_words: List[Any] = []
         for segment in segments:
             if hasattr(segment, 'words') and segment.words:
                 all_words.extend(segment.words)
@@ -487,8 +623,15 @@ class StellaScriptTranscription:
         
         logger.info(f"Generated {line_count} subtitle lines from the original segment.")
 
-    def _write_word_level_timestamps(self, segments, speaker_label, chunk_start_time):
-        """Writes word-level timestamps to the output file."""
+    def _write_word_level_timestamps(self, segments: List[Any], speaker_label: str, chunk_start_time: float) -> None:
+        """
+        Writes word-level timestamps to the output file.
+
+        Args:
+            segments (List[Any]): A list of transcription segments with word timestamps.
+            speaker_label (str): The label of the speaker.
+            chunk_start_time (float): The start time of the parent audio chunk.
+        """
         self._write_to_file(f"[{speaker_label}]\n", force_flush=True)
         for segment in segments:
             if hasattr(segment, 'words') and segment.words:
@@ -498,14 +641,25 @@ class StellaScriptTranscription:
                     line = f"[{start_time} -> {end_time}] {word.word.strip()}\n"
                     self._write_to_file(line, force_flush=True)
 
-    def _flush_transcription_buffer(self):
+    def _flush_transcription_buffer(self) -> None:
+        """Writes the content of the transcription buffer to the file."""
         if self.transcription_buffer["speaker"] and self.transcription_buffer["text"]:
             line = f"[{self.transcription_buffer['timestamp']}][{self.transcription_buffer['speaker']}] {self.transcription_buffer['text'].strip()}\n"
             logger.debug(f"Finalized: {line.strip()}")
             self._write_to_file(line, force_flush=True)
             self.transcription_buffer = {"speaker": None, "timestamp": None, "text": ""}
 
-    def _generate_filename(self, base_name=None, found_speakers=None):
+    def _generate_filename(self, base_name: Optional[str] = None, found_speakers: Optional[int] = None) -> str:
+        """
+        Generates a descriptive filename for the transcription output.
+
+        Args:
+            base_name (Optional[str]): The base name from the input file.
+            found_speakers (Optional[int]): The number of speakers detected.
+
+        Returns:
+            str: The generated filename.
+        """
         model_name_safe = self.model_id.replace("/", "_")
         base = os.path.splitext(os.path.basename(base_name))[0] if base_name else "live"
         
@@ -536,9 +690,15 @@ class StellaScriptTranscription:
         logger.debug(f"Generated filename: {filename}")
         return filename
 
-    def _save_enhanced_audio(self, original_path, audio_data, enhancement_method):
-        """Saves the enhanced audio to a new file."""
-        import numpy as np
+    def _save_enhanced_audio(self, original_path: str, audio_data: np.ndarray, enhancement_method: str) -> None:
+        """
+        Saves the enhanced audio to a new file.
+
+        Args:
+            original_path (str): The path of the original audio file.
+            audio_data (np.ndarray): The enhanced audio data.
+            enhancement_method (str): The name of the enhancement method used.
+        """
         try:
             base, ext = os.path.splitext(original_path)
             new_path = f"{base}_cleaned_{enhancement_method}{ext}"
@@ -555,15 +715,32 @@ class StellaScriptTranscription:
         except Exception as e:
             logger.error(f"Error saving enhanced audio: {e}")
 
-    def _format_timedelta(self, td):
-        """Formats a timedelta object into HH:MM:SS.ms."""
+    def _format_timedelta(self, td: timedelta) -> str:
+        """
+        Formats a timedelta object into HH:MM:SS.ms.
+
+        Args:
+            td (timedelta): The timedelta object to format.
+
+        Returns:
+            str: The formatted time string.
+        """
         total_seconds = td.total_seconds()
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         milliseconds = td.microseconds // 1000
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{milliseconds:03}"
 
-    def transcribe_file(self, file_path):
+    def transcribe_file(self, file_path: str) -> None:
+        """
+        Transcribes an entire audio file.
+
+        This method loads an audio file, applies enhancement and diarization,
+        and then transcribes the resulting audio segments.
+
+        Args:
+            file_path (str): The path to the audio file to transcribe.
+        """
         try:
             self._initialize_modules()
         except RuntimeError as e:
@@ -671,8 +848,13 @@ class StellaScriptTranscription:
         finally:
             if 0 in self.chunk_timestamps: del self.chunk_timestamps[0]
 
-    def _transcribe_audio(self):
-        """Transcription thread target function."""
+    def _transcribe_audio(self) -> None:
+        """
+        Target function for the transcription thread.
+
+        This method runs in a separate thread, continuously pulling audio
+        segments from a queue and processing them.
+        """
         while self.is_running or not self.result_queue.empty():
             try:
                 # Use a timeout to prevent blocking indefinitely if the queue is empty
@@ -688,11 +870,26 @@ class StellaScriptTranscription:
         
         logger.info("Transcription thread has finished processing all segments.")
 
-    def _process_audio_stream(self, in_data, frame_count, time_info, status):
-        if self.is_stopping:
-            return (in_data, 1) # pyaudio.paComplete is 1
+    def _process_audio_stream(self, in_data: bytes, frame_count: int, time_info: Dict[str, float], status: int) -> Tuple[bytes, int]:
+        """
+        PyAudio stream callback function.
 
-        import numpy as np
+        This method is called by PyAudio for each new chunk of audio data
+        from the microphone.
+
+        Args:
+            in_data (bytes): The audio data buffer.
+            frame_count (int): The number of frames in the buffer.
+            time_info (Dict[str, float]): Dictionary containing timestamps.
+            status (int): PortAudio status flags.
+
+        Returns:
+            Tuple[bytes, int]: A tuple containing the audio data and a flag
+                               indicating whether to continue the stream.
+        """
+        if self.is_stopping:
+            return (in_data, 1)  # pyaudio.paComplete is 1
+
         now = datetime.now()
         chunk = np.frombuffer(in_data, dtype=np.float32)
         assert self.enhancer is not None
@@ -704,8 +901,14 @@ class StellaScriptTranscription:
             self._process_long_buffer_mode(chunk, now)
         return (in_data, 0) # pyaudio.paContinue is 0
 
-    def _process_segment_mode(self, chunk, now):
-        import numpy as np
+    def _process_segment_mode(self, chunk: np.ndarray, now: datetime) -> None:
+        """
+        Processes an audio chunk in 'segment' (subtitle) mode using VAD.
+
+        Args:
+            chunk (np.ndarray): The incoming audio chunk.
+            now (datetime): The current timestamp.
+        """
         assert self.diarizer is not None
         speech_prob = self.diarizer.apply_vad_to_chunk(chunk)
         if speech_prob > self.vad_speech_threshold:
@@ -733,9 +936,14 @@ class StellaScriptTranscription:
             self.vad_speech_buffer = np.array([], dtype=np.float32)
             # We don't reset vad_is_speaking here, as speech continues.
 
-    def _process_long_buffer_mode(self, chunk, now):
-        """Process audio in block or word mode with larger buffers."""
-        import numpy as np
+    def _process_long_buffer_mode(self, chunk: np.ndarray, now: datetime) -> None:
+        """
+        Processes an audio chunk in 'block' or 'word' mode with a long buffer.
+
+        Args:
+            chunk (np.ndarray): The incoming audio chunk.
+            now (datetime): The current timestamp.
+        """
         self.audio_buffer = np.concatenate([self.audio_buffer, chunk])
         
         # Store the timestamp when the buffer starts filling
@@ -759,8 +967,10 @@ class StellaScriptTranscription:
             self.audio_buffer = np.array([], dtype=np.float32)
             self.buffer_start_time = None
 
-    def start_recording(self):
-        """Initializes and starts the audio recording and processing threads."""
+    def start_recording(self) -> None:
+        """
+        Initializes and starts the audio recording and processing threads.
+        """
         try:
             self._initialize_modules()
         except RuntimeError as e:
@@ -784,11 +994,13 @@ class StellaScriptTranscription:
         logger.info("Starting audio stream...")
         if self.stream: self.stream.start_stream()
 
-    def stop_recording(self):
+    def stop_recording(self) -> None:
+        """
+        Stops the audio recording and waits for all processing to complete.
+        """
         if not self.is_running or self.is_stopping:
             return
-        
-        import numpy as np
+
         logger.info("\nStopping recording...")
         self.is_stopping = True # Signal to stop processing new audio chunks
         
@@ -849,9 +1061,12 @@ class StellaScriptTranscription:
         
         self.is_stopping = False
 
-    def save_audio(self):
-        if not self.full_audio_buffer_list: return
-        import numpy as np
+    def save_audio(self) -> None:
+        """
+        Saves the entire recorded audio session to a WAV file.
+        """
+        if not self.full_audio_buffer_list:
+            return
         full_audio = np.concatenate(self.full_audio_buffer_list)
         filename = f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
         scaled = np.int16(full_audio / np.max(np.abs(full_audio)) * 32767.0)

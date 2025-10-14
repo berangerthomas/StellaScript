@@ -9,21 +9,41 @@ from pathlib import Path
 
 class CustomFormatter(logging.Formatter):
     """
-    Formatter personnalisé pour retirer le préfixe 'stellascript.' du nom du logger.
+    Custom log formatter to remove the 'stellascript.' prefix from logger names.
+
+    This formatter simplifies the log output by stripping the base package name,
+    making the logs cleaner and easier to read.
     """
-    def format(self, record):
+
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Formats the log record.
+
+        Args:
+            record (logging.LogRecord): The original log record.
+
+        Returns:
+            str: The formatted log message.
+        """
         if record.name.startswith('stellascript.'):
             record.name = record.name[len('stellascript.'):]
         return super().format(record)
 
 
-def setup_logging(level=logging.INFO, log_file=None):
+def setup_logging(level: int = logging.INFO, log_file: str | None = None) -> logging.Logger:
     """
-    Configure le logging pour l'application.
+    Configures the logging for the entire application.
+
+    This function sets up a root logger for the 'stellascript' package with
+    a custom formatter. It supports logging to both the console and an optional
+    log file.
 
     Args:
-        level: Niveau de logging (DEBUG, INFO, WARNING, ERROR)
-        log_file: Chemin du fichier de log optionnel
+        level (int): The logging level (e.g., logging.INFO, logging.DEBUG).
+        log_file (str | None): Optional path to a file for logging.
+
+    Returns:
+        logging.Logger: The configured root logger for the application.
     """
     # Format personnalisé pour un affichage plus propre
     formatter = CustomFormatter(
@@ -58,13 +78,20 @@ def setup_logging(level=logging.INFO, log_file=None):
     return root_logger
 
 
-def get_logger(name):
+def get_logger(name: str) -> logging.Logger:
     """
-    Retourne un logger configuré pour le module spécifié.
-    Le nom du module est utilisé directement pour créer la hiérarchie.
+    Retrieves a logger instance for a specific module.
+
+    This is a convenience function to get a logger that is part of the
+    'stellascript' hierarchy. The logger inherits its configuration from the
+    root logger set up by `setup_logging`.
+
+    Args:
+        name (str): The name of the logger, typically `__name__` of the module.
+
+    Returns:
+        logging.Logger: A configured logger instance.
     """
-    # Le nom du module (ex: 'stellascript.audio.enhancement') est suffisant.
-    # Le logger racine 'stellascript' est déjà configuré.
     return logging.getLogger(name)
 
 

@@ -7,8 +7,18 @@ from .logging_config import get_logger
 
 logger = get_logger(__name__)
 
-def parse_args():
-    """Parses command-line arguments."""
+def parse_args() -> argparse.Namespace:
+    """
+    Parses command-line arguments for the Stellascript application.
+
+    This function sets up an ArgumentParser to handle various command-line options
+    for transcription, including language, model selection, input file,
+    diarization, and audio enhancement. It also includes argument validation
+    to ensure compatibility between different options.
+
+    Returns:
+        argparse.Namespace: An object containing the parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Transcribe audio live from microphone or from a file."
     )
@@ -92,8 +102,25 @@ def parse_args():
     validate_args(args, parser)
     return args
 
-def validate_args(args, parser):
-    """Validates parsed arguments."""
+
+def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """
+    Validates the parsed command-line arguments to ensure they are consistent.
+
+    This function checks for various invalid combinations of arguments, such as:
+    - Using speaker count constraints in live mode.
+    - Incompatible diarization and transcription modes.
+    - Misuse of the similarity threshold with certain diarization methods.
+    - Conflicting arguments for speaker count and similarity threshold.
+
+    Args:
+        args (argparse.Namespace): The parsed command-line arguments.
+        parser (argparse.ArgumentParser): The argument parser, used to report errors.
+
+    Raises:
+        SystemExit: If an invalid combination of arguments is found, the program
+                    exits with an error message.
+    """
     if (args.min_speakers is not None or args.max_speakers is not None) and not args.file:
         parser.error("--min-speakers and --max-speakers can only be used in file mode (--file).")
 

@@ -1,24 +1,57 @@
 # stellascript/audio/enhancement.py
 
+"""
+Handles audio enhancement using various methods like DeepFilterNet and Demucs.
+"""
+
 import warnings
+from typing import Any, Optional
+
 import numpy as np
 import torch
 import torchaudio
+
 from ..logging_config import get_logger
 
 logger = get_logger(__name__)
 
-class AudioEnhancer:
-    def __init__(self, enhancement_method, device, rate):
-        self.enhancement_method = enhancement_method
-        self.device = device
-        self.rate = rate
-        self.demucs_model = None
-        self.df_model = None
-        self.df_state = None
 
-    def apply(self, audio_data, is_live=False):
-        """Apply selected audio enhancement method."""
+class AudioEnhancer:
+    """
+    A class to apply audio enhancement techniques to audio data.
+
+    This class supports multiple enhancement methods and handles the loading
+    of the necessary models.
+    """
+
+    def __init__(self, enhancement_method: str, device: torch.device, rate: int) -> None:
+        """
+        Initializes the AudioEnhancer.
+
+        Args:
+            enhancement_method (str): The enhancement method to use ('none',
+                                      'deepfilternet', 'demucs').
+            device (torch.device): The device to run the models on (CPU or CUDA).
+            rate (int): The sample rate of the input audio.
+        """
+        self.enhancement_method: str = enhancement_method
+        self.device: torch.device = device
+        self.rate: int = rate
+        self.demucs_model: Optional[Any] = None
+        self.df_model: Optional[Any] = None
+        self.df_state: Optional[Any] = None
+
+    def apply(self, audio_data: np.ndarray, is_live: bool = False) -> np.ndarray:
+        """
+        Apply the selected audio enhancement method.
+
+        Args:
+            audio_data (np.ndarray): The input audio data as a NumPy array.
+            is_live (bool): Flag indicating if the processing is for a live stream.
+
+        Returns:
+            np.ndarray: The enhanced audio data.
+        """
         if self.enhancement_method == "none":
             return audio_data
 

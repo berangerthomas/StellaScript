@@ -1,27 +1,59 @@
 # stellascript/processing/diarizer.py
 
+"""
+Handles speaker diarization using different methods like Pyannote and VAD with clustering.
+"""
+
 import os
-import torch
-import numpy as np
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
 from pyannote.audio import Pipeline
 from pyannote.core import Segment
+
 from ..logging_config import get_logger
+from .speaker_manager import SpeakerManager
 
 logger = get_logger(__name__)
 
-class Diarizer:
-    def __init__(self, device, method, hf_token, rate):
-        self.device = device
-        self.method = method
-        self.rate = rate
-        self.diarization_pipeline = self._load_diarization_pipeline(hf_token)
-        self.vad_model = None
-        self.vad_utils = None
 
-    def _load_diarization_pipeline(self, hf_token):
-        """Load the diarization pipeline."""
+class Diarizer:
+    """
+    A class to perform speaker diarization on audio data.
+
+    This class supports multiple diarization methods, including the pre-trained
+    Pyannote pipeline and a custom VAD-based clustering approach.
+    """
+
+    def __init__(self, device: torch.device, method: str, hf_token: Optional[str], rate: int) -> None:
+        """
+        Initializes the Diarizer.
+
+        Args:
+            device (torch.device): The device to run the models on.
+            method (str): The diarization method to use ('pyannote', 'cluster').
+            hf_token (Optional[str]): The Hugging Face authentication token for Pyannote.
+            rate (int): The sample rate of the audio.
+        """
+        self.device: torch.device = device
+        self.method: str = method
+        self.rate: int = rate
+        self.diarization_pipeline: Optional[Pipeline] = self._load_diarization_pipeline(hf_token)
+        self.vad_model: Optional[Any] = None
+        self.vad_utils: Optional[Dict[str, Any]] = None
+
+    def _load_diarization_pipeline(self, hf_token: Optional[str]) -> Optional[Pipeline]:
+        """
+        Load the Pyannote diarization pipeline.
+
+        Args:
+            hf_token (Optional[str]): The Hugging Face token.
+
+        Returns:
+            Optional[Pipeline]: The loaded Pyannote pipeline, or None if not used.
+        """
         if self.method != "pyannote":
             return None
         logger.info("Loading pyannote diarization model")
@@ -45,8 +77,8 @@ class Diarizer:
             else:
                 raise e
 
-    def _ensure_vad_loaded(self):
-        """Lazy loading of VAD model."""
+    def _ensure_vad_loaded(self) -> None:
+        """Lazy loading of the Silero VAD model."""
         if self.vad_model is None:
             logger.info("Loading Silero VAD model")
             self.vad_model, self.vad_utils = torch.hub.load(  # type: ignore
@@ -55,8 +87,18 @@ class Diarizer:
                 force_reload=False
             )
 
-    def diarize_pyannote(self, audio_data, min_speakers=None, max_speakers=None):
-        """Diarize using pyannote pipeline."""
+    def diarize_pyannote(self, audio_data: np.ndarray, min_speakers: Optional[int] = None, max_speakers: Optional[int] = None) -> List[Tuple[Segment, str, str]]:
+        """
+        Diarize audio using the Pyannote pipeline.
+
+        Args:
+            audio_data (np.ndarray): The audio data to diarize.
+            min_speakers (Optional[int]): The minimum number of speakers.
+            max_speakers (Optional[int]): The maximum number of speakers.
+
+        Returns:
+            List[Tuple[Segment, str, str]]: A list of diarized segments.
+        """
         if self.diarization_pipeline is None:
             raise RuntimeError(
                 "Diarization pipeline not initialized. Check if method is 'pyannote'."
@@ -89,8 +131,21 @@ class Diarizer:
         segments_list = list(annotation.itertracks(yield_label=True))
         return segments_list
 
-    def diarize_cluster(self, audio_data, speaker_manager, similarity_threshold, max_speakers=None):
-        """Diarize using VAD and clustering."""
+    def diarize_cluster(self, audio_data: np.ndarray, speaker_manager: SpeakerManager, similarity_threshold: float, max_speakers: Optional[int] = None) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Diarize audio using VAD and clustering.
+
+        Args:
+            audio_data (np.ndarray): The audio data to diarize.
+            speaker_manager (SpeakerManager): The speaker manager for embeddings.
+            similarity_threshold (float): The similarity threshold for clustering.
+            max_speakers (Optional[int]): The maximum number of speakers.
+
+        Returns:
+            Tuple[List[Dict[str, Any]], int]: A tuple containing the list of
+                                               diarized segments and the number
+                                               of found speakers.
+        """
         logger.info("Segmenting speech with Silero VAD")
         self._ensure_vad_loaded()
         assert self.vad_utils is not None, "VAD utils should be loaded by _ensure_vad_loaded"
@@ -162,8 +217,16 @@ class Diarizer:
         
         return segments_with_speakers, found_speakers
 
-    def apply_vad_to_chunk(self, audio_chunk):
-        """Apply VAD to a small audio chunk (for live subtitle mode)."""
+    def apply_vad_to_chunk(self, audio_chunk: np.ndarray) -> float:
+        """
+        Apply VAD to a small audio chunk for live subtitle mode.
+
+        Args:
+            audio_chunk (np.ndarray): The audio chunk to process.
+
+        Returns:
+            float: The speech probability.
+        """
         self._ensure_vad_loaded()
         assert self.vad_model is not None, "VAD model should be loaded by _ensure_vad_loaded"
         audio_tensor = torch.from_numpy(np.copy(audio_chunk))
