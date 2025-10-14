@@ -19,4 +19,5 @@ dependencies = [
     "torchvision>=0.23.0",
     "torchcodec>=0.7.0",
     "whisperx>=3.3.1",
+    "sphinx-rtd-theme>=3.0.2",
 ]

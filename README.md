@@ -92,6 +92,26 @@ The final output format is controlled by the `--mode` argument, which dictates t
 
 -   **`word` Mode**: This mode provides the highest level of detail. It generates a timestamp for every single word, which is useful for detailed analysis, research, or creating synchronized applications.
 
+## Project Architecture
+
+The application is built around a modular architecture with a central orchestrator managing the entire transcription pipeline.
+
+-   **Entrypoint (`main.py`)**: The script that launches the application. It parses command-line arguments and initializes the main orchestrator.
+-   **Orchestrator (`stellascript/orchestrator.py`)**: The core of the application. It coordinates all modules, from audio input to final text output, managing the different processing modes (`block`, `segment`, `word`).
+-   **Configuration (`stellascript/config.py`)**: A centralized file holding all technical parameters, such as audio sample rates, buffer durations, and model settings, for easy tuning.
+
+### Core Modules
+
+-   **Audio Handling (`stellascript/audio/`)**:
+    -   `capture.py`: Manages real-time audio recording from the microphone.
+    -   `enhancement.py`: Applies noise reduction and audio cleaning models to improve source clarity.
+-   **Processing (`stellascript/processing/`)**:
+    -   `diarizer.py`: Identifies speaker segments in the audio stream ("who speaks when").
+    -   `speaker_manager.py`: Creates and manages voiceprints to track unique speakers.
+    -   `transcriber.py`: Converts audio segments into text using the Whisper model.
+
+This structure separates concerns, making the system easier to maintain and extend.
+
 ## Installation
 
 ### Prerequisites
