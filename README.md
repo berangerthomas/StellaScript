@@ -10,6 +10,10 @@
     <a href="https://huggingface.co/transformers"><img src="https://img.shields.io/badge/%F0%9F%A4%97-Transformers-yellow" alt="Transformers"></a>
 </div>
 
+<div align="center">
+    <strong><a href="https://berangerthomas.github.io/StellaScript/">Read the documentation</a></strong>
+</div>
+
 ## A Python tool for transcription and speaker diarization
 
 StellaScript is a Python application for generating speaker-aware transcriptions from live or pre-recorded audio. It integrates several machine learning models for its core functions: speech-to-text via OpenAI's Whisper model (using the `whisperx` library for optimized performance), speaker diarization using `pyannote.audio`, and speaker embedding generation with `SpeechBrain`.
