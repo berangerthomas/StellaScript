@@ -39,6 +39,20 @@ The choice of the Whisper model is a trade-off between transcription accuracy (m
 
 *Figure 2: Word Error Rate (WER) versus processing time for various Whisper models in French, English, Spanish, and German.*
 
+### Transcription Quality and Optimization
+
+StellaScript is designed to produce transcriptions with a low error rate. The tool implements several techniques to reduce errors, such as voice activity detection and optimized decoding parameters. The technical details of these methods are available in the [**documentation**](https://berangerthomas.github.io/StellaScript/concepts/quality.html).
+
+Here is a summary of the key optimization strategies:
+
+-   **Voice Activity Detection (VAD)**: The system uses a VAD model (`Silero-VAD`) to identify speech segments. This process removes silences and non-speech noise, which can lead to transcription errors, including model hallucinations. The use of VAD is a common method for improving transcription quality by pre-processing the audio.
+
+-   **Noise Reduction**: For noisy environments, StellaScript integrates neural network-based denoisers such as **`Demucs`**. This model separates speech from background noise to improve audio clarity before transcription.
+
+-   **Decoding Parameters**: The tool is configured with selected decoding parameters (e.g., `beam_size=5`, `temperature=0.0`) intended to favor coherent and plausible output from the Whisper model.
+
+-   **Hallucination Prevention**: In addition to silence padding, StellaScript includes mechanisms to mitigate hallucinations, such as setting thresholds on the model's log probability and compression ratio, which can indicate low-quality transcriptions.
+
 Based on the performance data, here are some model selection recommendations for specific languages:
 
 -   **French**: `large-v3` is recommended for the highest accuracy.
@@ -48,13 +62,13 @@ Based on the performance data, here are some model selection recommendations for
 
 ### 2. Hallucination mitigation via silence padding
 
-To mitigate the risk of model hallucinations—where repetitive or nonsensical text is generated—the script employs a silence padding technique. Before transcription, each audio chunk is wrapped with **1.5 seconds of digital silence** at both the beginning and end. Importantly, the final timestamps are adjusted to reflect the original audio, ensuring that this internal processing step *does not affect temporal accuracy*.
+To mitigate the risk of model hallucinations—where repetitive or nonsensical text is generated—the script employs a silence padding technique. This is one of several strategies used to ensure output quality. Before transcription, each audio chunk is wrapped with **1.5 seconds of digital silence** at both the beginning and end. Importantly, the final timestamps are adjusted to reflect the original audio, ensuring that this internal processing step *does not affect temporal accuracy*.
 
 ### 3. Speaker diarization methodologies
 
 The tool offers two distinct methods for speaker identification, selectable via the `--diarization` argument:
 
--   **`pyannote` (Default)**: this method (`--diarization pyannote`) uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is a comprehensive model that performs speech segmentation, embedding extraction, and clustering in a single step, offering high accuracy, especially in conversations with overlapping speech.
+-   **`pyannote` (Default)**: this method (`--diarization pyannote`) uses the pre-trained, end-to-end `pyannote/speaker-diarization-3.1` pipeline [[2]](#2). It is an end-to-end model that performs speech segmentation, embedding extraction, and clustering. It is often used for conversations with overlapping speech.
 
 -   **`cluster`**: This method (`--diarization cluster`) is a multi-step pipeline:
     1.  **Voice Activity Detection (VAD)**: the audio is first segmented into speech and non-speech regions using the `Silero-VAD` model [[4]](#4).
@@ -68,7 +82,7 @@ When transcribing a file (using the `--file` argument), the pipeline must balanc
 #### Single-speaker optimization (`--max-speakers 1`)
 
 1. The entire audio file is treated as a single segment, bypassing the diarization step.
-2. This large segment is then intelligently chunked into optimal fragments of 60-120 seconds.
+2. This large segment is then chunked into fragments of 60-120 seconds.
 3. Each chunk is transcribed independently, preserving context while maintaining Whisper's optimal input length.
 
 This approach maximizes efficiency by eliminating unnecessary speaker identification when only one speaker is present.
@@ -76,7 +90,7 @@ This approach maximizes efficiency by eliminating unnecessary speaker identifica
 #### Multi-speaker processing
 
 1. The entire file is first diarized to identify all speaker turns, producing numerous small segments (typically 2-10 seconds each, corresponding to individual utterances).
-2. These segments are then intelligently regrouped into larger chunks of 60-120 seconds while preserving:
+2. These segments are then regrouped into larger chunks of 60-120 seconds while preserving:
    - Speaker boundaries (segments from different speakers are not merged)
    - Natural conversation breaks (silence gaps > 0.5s are respected)
    - Temporal coherence (consecutive segments from the same speaker are merged if separated by < 5s)
@@ -87,13 +101,13 @@ This approach maximizes efficiency by eliminating unnecessary speaker identifica
 - **`block` and `word` modes**: Apply the full chunking and merging pipeline described above to maximize transcription quality through contextual understanding.
 - **`segment` mode**: Uses the original, smaller segments directly from the diarizer to minimize latency, which is essential for real-time subtitle generation.
 
-This adaptive chunking methodology ensures that each audio fragment sent for transcription contains coherent conversational context, thereby improving both the accuracy and readability of the output while respecting the constraints of each operational mode.
+This chunking methodology aims to provide each audio fragment sent for transcription with sufficient conversational context. This can contribute to the accuracy and readability of the output while respecting the constraints of each operational mode.
 
 ### 5. Output formatting modes
 
 The final output format is controlled by the `--mode` argument, which dictates the granularity of the timestamps and the structure of the text.
 
--   **`block` Mode (Default)**: This mode is designed for maximum readability. It performs a post-processing step that intelligently concatenates consecutive utterances from the same speaker. This transforms a fragmented stream of segments into coherent, paragraph-like blocks of text for each speaker, making the final document easy to read and analyze.
+-   **`block` Mode (Default)**: This mode is designed for readability. It performs a post-processing step that concatenates consecutive utterances from the same speaker. This transforms a fragmented stream of segments into coherent, paragraph-like blocks of text for each speaker, making the final document easy to read and analyze.
 
 -   **`segment` Mode**: This mode is optimized for subtitles. It uses word-level timestamps to create shorter, time-accurate text segments that are ideal for captions. It balances readability with precise timing.
 
@@ -187,7 +201,7 @@ python main.py --mode block --file "interview.wav" --min-speakers 2 --max-speake
 ### Scenario 3: transcribing a noisy field recording
 
 **Goal**: extract intelligible speech from a noisy environment.
-**Rationale**: `demucs` is a powerful source separation model that can isolate vocals from background noise, which is ideal for improving the clarity of the transcription.
+**Rationale**: `demucs` is a source separation model that can isolate vocals from background noise. This approach can be used to improve transcription clarity in challenging audio conditions.
 ```bash
 python main.py --mode block --file "field_recording.wav" --enhancement demucs
 ```
@@ -248,6 +262,10 @@ All transcriptions are saved to a `.txt` file with a name generated from the con
 4.  <a name="4"></a>Silero Team. (2024). *Silero VAD: pre-trained enterprise-grade Voice Activity Detector (VAD), Number Detector and Language Classifier*. [GitHub repository](https://github.com/snakers4/silero-vad).
 5.  <a name="5"></a>Défossez, A., Usunier, N., Bottou, L., & Bach, F. (2019). *Music Source Separation in the Waveform Domain*. [arXiv:1911.13254](https://arxiv.org/abs/1911.13254).
 6.  <a name="6"></a>Schröter, H., Escalante-B., A. N., & Rosenkranz, T. (2022). *DeepFilterNet: A Low Complexity Speech Enhancement Framework for Full-Band Audio based on Deep Filtering*. [arXiv:2110.05588](https://arxiv.org/abs/2110.05588).
+
+## Further Reading
+
+For a deep dive into the methodologies for optimizing transcription quality, including detailed explanations of the techniques mentioned above, please refer to the **[Transcription Quality and Optimization](httpshttps://berangerthomas.github.io/StellaScript/concepts/quality.html)** page in our documentation.
 
 ## License
 

@@ -1,11 +1,15 @@
 .. StellaScript documentation master file.
 
+.. toctree::
+   :hidden:
+   :maxdepth: 2
+   :caption: Introduction
+
+   self
+
 ##########################
 StellaScript Documentation
 ##########################
-
-Introduction
-============
 
 StellaScript is a Python application designed for audio transcription and speaker diarization. Its primary goal is to provide an accurate and efficient tool for converting audio streams, whether pre-recorded or captured live, into structured text while identifying the different speakers.
 
@@ -21,6 +25,7 @@ This documentation aims to provide a technical overview of the project, its arch
    :maxdepth: 2
    :caption: Contents
 
+   concepts/index
    technical/index
    api/index
 
